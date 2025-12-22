@@ -2,10 +2,10 @@
 
 A combined openFrameworks application that blends the strengths of two existing apps without modifying them:
 
-- Video ingest + robust threaded serial streaming (protocol, reconnects, CRC) from `video-to-LED-matrix`.
+- Video ingest + OSC streaming (payload compatible with `wifiLedController`).
 - MIDI‑driven LED pattern control (KORG nanoKONTROL2) inspired by `cylinder-led-controller`.
 
-It lets you switch live between a MIDI‑controlled expression and a video‑driven expression, while always using the streaming style and protocol expected by the Arduino receiver used by `video-to-LED-matrix`.
+It lets you switch live between a MIDI‑controlled expression and a video‑driven expression, while streaming LED frames over WiFi/OSC to ESP32 receivers.
 
 
 ## Features
@@ -13,9 +13,8 @@ It lets you switch live between a MIDI‑controlled expression and a video‑dri
 - Two sources:
   - Video: play a video and downsample to a 12×19 grid.
   - MIDI Pattern: animated line pattern with full controls via KORG nanoKONTROL2.
-- Robust sender:
-  - Threaded serial writer with back‑pressure, keep‑alive resend, auto‑connect/reconnect.
-  - CRC16 framing and protocol compatible with `video-to-LED-matrix` Arduino sketch.
+- OSC sender:
+  - Multi‑host OSC streaming with broadcast support and ACK tracking.
 - Mapping options: column rotation, serpentine wiring, vertical flip, brightness control.
 - Simple, dependency‑light UI overlays with keyboard shortcuts.
 
@@ -23,8 +22,8 @@ It lets you switch live between a MIDI‑controlled expression and a video‑dri
 ## Requirements
 
 - openFrameworks (0.11.x or later recommended).
-- Addon: `ofxMidi` installed in `OF_ROOT/addons/ofxMidi`.
-- Arduino receiver compatible with the `video-to-LED-matrix` packet format.
+- Addons: `ofxMidi`, `ofxOsc` installed in `OF_ROOT/addons/`.
+- ESP32 receivers listening for OSC frames (as in `wifiLedController`).
 
 
 ## Build
@@ -42,7 +41,7 @@ The executable is created at `bin/hybrid-led-controller`.
 
 - Optional: place a `video.mp4` in `bin/data/` – the app will try to load it on startup.
 - Start the app. If a KORG nanoKONTROL2 (or other MIDI device) is connected, the app auto‑opens the first matching MIDI input.
-- Serial auto‑connect is enabled by default and will connect to the last known port if available, or the first matching `ttyACM/ttyUSB/usbmodem/COM` port.
+- Edit `bin/data/osc_devices.txt` to set ESP32 IPs or leave it as `broadcast`.
 
 
 ## Modes (sources)
@@ -75,10 +74,8 @@ Typical CC layout in CC mode is assumed. The app scans all input ports and prefe
 - Knobs 16..23: Mirror the sliders above (same parameters).
 - Buttons
   - Solo 1 (CC 32): Toggle Pause Automation
-  - Mute 1 (CC 48): Toggle Serial Send on/off (quick safety mute)
+  - Mute 1 (CC 48): Toggle OSC Send on/off (quick safety mute)
   - Mute 2 (CC 49): Toggle Mode Video ↔ MIDI Pattern
-  - Rec 1 (CC 64): Enable Serial Auto‑Connect
-  - Rec 2 (CC 65): Disconnect + Disable Auto‑Connect
 
 Notes
 - The device should be in CC mode (not DAW mode). If values don’t change, check the device mode or use KORG’s configuration utility.
@@ -95,7 +92,6 @@ Notes
   - `V`: vertical flip
   - `[` `]`: rotate columns
   - `R`: reset column offset
-  - `0..9`: connect to listed serial port index
 - Video
   - `L`: load video file (dialog)
   - Space: play/pause
@@ -108,22 +104,11 @@ Notes
   - `Q`: pause automation
 
 
-## Serial Protocol
+## OSC Payload
 
-- Geometry: 12 columns × 19 rows = 228 LEDs, RGB payload = 684 bytes.
-- Framing (byte order, all values little‑endian):
-  - 0: `0xAA` (magic0)
-  - 1: `0x55` (magic1)
-  - 2: `0x01` (protocol version)
-  - 3–4: `uint16 length` = 684
-  - 5–6: `uint16 frameId` (increments each frame)
-  - 7..(7+length-1): payload RGB triplets (R,G, B) for each LED
-  - end: `uint16 crc16` over bytes starting at index 2 (version) through end of payload
-- CRC: CRC16‑CCITT (poly 0x1021), initial value 0xFFFF.
-- Baud: default 115200; max effective FPS is auto‑computed to stay within serial bandwidth.
-- Keep‑alive: the sender thread resends the last packet if no data was written for ~400ms to help receivers detect link health.
-
-This matches the Arduino receiver shipped with `video-to-LED-matrix`.
+- Address: `/leds`
+- Payload: one blob containing RGB triplets for the 12×19 LED grid (684 bytes).
+- Host list: `bin/data/osc_devices.txt` (one IP/hostname per line, or `broadcast`).
 
 
 ## LED Mapping Options
@@ -140,15 +125,13 @@ This matches the Arduino receiver shipped with `video-to-LED-matrix`.
   - Ensure `ofxMidi` is installed and built.
   - Confirm the device is in CC mode (not DAW).
   - Use a MIDI monitor to verify CC messages are being sent.
-- No serial connection
-  - Check Arduino is on a `ttyACM`/`ttyUSB`/`usbmodem` port.
-  - Press a digit `0..9` to force connect to a listed port index.
-  - Use Rec 1 (CC 64) to re‑enable auto‑connect; Rec 2 (CC 65) disconnects.
+- No OSC connection
+  - Check `bin/data/osc_devices.txt` points at reachable ESP32 IPs (or use `broadcast`).
+  - Verify the ESP32 receiver is listening on port 9000 and sending ACKs to port 9001.
 - Low FPS / dropped frames
-  - The app auto‑clamps send FPS to serial bandwidth. Increase baud on both ends if necessary and rebuild.
+  - Lower the target send FPS or check WiFi stability and receiver throughput.
 
 
 ## License
 
 No license changes. This app is a new project that reuses ideas and runtime integration approaches; it does not modify the original `cylinder-led-controller` or `video-to-LED-matrix` projects.
-

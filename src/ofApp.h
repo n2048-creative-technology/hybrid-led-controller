@@ -1,10 +1,10 @@
 #pragma once
 
 #include "ofMain.h"
+#include "ofxOsc.h"
 #include <atomic>
-#include <condition_variable>
 #include <mutex>
-#include <thread>
+#include <unordered_map>
 #include "LedMapper.h"
 #if __has_include("ofxMidi.h")
 #include "ofxMidi.h"
@@ -53,25 +53,16 @@ private:
   void setupMidi();
   void openMidiPortByIndex(int idx);
 
-  // Serial sender thread (from video-to-LED-matrix)
-  void startSenderThread();
-  void stopSenderThread();
-  void senderThreadLoop();
-  void refreshPorts();
-  bool autoConnectPort();
-  bool connectToPortIndex(int idx);
-  void closeSerial();
+  // OSC sender (from wifiLedController)
+  void setupOscSenders();
+  void sendOscFrame();
+  void handleOscAcks();
   void sendFrameIfDue();
 
   static constexpr int kCols = 12;
   static constexpr int kRows = 19;
   static constexpr int kNumLeds = kCols * kRows;
   static constexpr int kPayloadSize = kNumLeds * 3;
-  static constexpr int kPacketBytes = 2 + 1 + 2 + 2 + kPayloadSize + 2;
-  static constexpr uint8_t kProtocolVersion = 0x01;
-  static constexpr uint8_t kMagic0 = 0xAA;
-  static constexpr uint8_t kMagic1 = 0x55;
-
   // Video
   ofVideoPlayer video;
   bool videoLoaded = false;
@@ -99,50 +90,28 @@ private:
   bool verticalFlip = false;
   int columnOffset = 0;
 
-  // Serial
-  ofSerial serial;
-  std::vector<ofSerialDeviceInfo> devices;
-  int selectedPortIndex = -1;
-  std::string connectedPort;
-  std::string lastKnownPort;
-  int baud = 115200;
-  bool autoConnect = true;
-  std::atomic<bool> serialConnected{false};
-  uint32_t serialConnectMillis = 0;
+  // OSC
+  std::vector<std::string> oscHosts;
+  std::vector<ofxOscSender> oscSenders;
+  ofxOscReceiver ackReceiver;
+  int oscPort = 9000;
+  int ackPort = 9001;
+  std::string oscAddress = "/leds";
+  bool oscReady = false;
+  std::unordered_map<std::string, uint32_t> lastSeenByHost;
+  uint32_t activeDeviceTtlMs = 3000;
 
   // Sender timing
   float targetSendFps = 30.0f;
-  float maxSendFps = 0.0f;
-  bool sendFpsClamped = false;
   float brightnessScalar = 0.8f;
-  bool sendSerial = true;                 // allow pausing sender via MIDI
+  bool sendOsc = true;                 // allow pausing sender via MIDI
 
-  uint16_t frameId = 0;
   std::atomic<uint64_t> framesSent{0};
   std::atomic<uint64_t> framesDropped{0};
   uint32_t lastSendMillis = 0;
-  std::atomic<uint32_t> lastWriteMillis{0};
 
   std::vector<uint8_t> payload;
-  std::vector<uint8_t> packet;
-
-  float lastPortRefresh = 0.0f;
-  uint32_t lastReconnectAttemptMillis = 0;
-  uint32_t reconnectIntervalMs = 500;
-
-  std::thread senderThread;
-  std::mutex senderMutex;
-  std::condition_variable senderCv;
-  std::vector<uint8_t> pendingPacket;
-  bool hasPendingPacket = false;
-  std::vector<uint8_t> lastPacket;
-  bool hasLastPacket = false;
-  std::atomic<bool> senderStop{false};
-  std::atomic<bool> requestClose{false};
-  std::atomic<bool> requestConnect{false};
-  std::mutex connectMutex;
-  std::string pendingConnectPort;
-  std::mutex serialMutex;
+  std::mutex oscMutex;
 
   // UI interactions
   ofRectangle brightnessSliderRect;

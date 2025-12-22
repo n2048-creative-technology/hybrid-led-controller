@@ -2,18 +2,6 @@
 #include <algorithm>
 
 namespace {
-uint16_t crc16Update(uint16_t c, uint8_t data) {
-  c ^= (uint16_t)data << 8;
-  for (uint8_t i = 0; i < 8; i++) {
-    if (c & 0x8000) {
-      c = (c << 1) ^ 0x1021;
-    } else {
-      c <<= 1;
-    }
-  }
-  return c;
-}
-
 glm::vec2 estimateBitmapStringSize(const std::string& text, float charW, float charH, float lineH) {
   size_t maxLen = 0;
   size_t lines = 1;
@@ -43,11 +31,8 @@ void ofApp::setup() {
   downsamplePixels.allocate(kCols, kRows, OF_PIXELS_RGB);
 
   payload.assign(kPayloadSize, 0);
-  packet.reserve(2 + 1 + 2 + 2 + kPayloadSize + 2);
-
-  startSenderThread();
-  refreshPorts();
-  autoConnectPort();
+  setupOscSenders();
+  ackReceiver.setup(ackPort);
 
   // Optional default video (put in bin/data as video.mp4)
   loadVideo("video.mp4");
@@ -78,37 +63,8 @@ void ofApp::update() {
     }
   }
 
-  // Serial auto connect/reconnect logic (same as video-to-LED-matrix)
-  const float now = ofGetElapsedTimef();
-  if (!serialConnected.load() && autoConnect) {
-    autoConnectPort();
-  }
-  if (serialConnected.load() && !connectedPort.empty()) {
-    if (!ofFile::doesFileExist(connectedPort)) {
-      closeSerial();
-    }
-  }
-  if (serialConnected.load()) {
-    uint32_t sinceWrite = now - lastWriteMillis.load();
-    if (sinceWrite > 3000 && now - serialConnectMillis > 2000) {
-      closeSerial();
-    }
-  } else if (autoConnect) {
-    uint32_t nowMs = ofGetElapsedTimeMillis();
-    if (nowMs - lastReconnectAttemptMillis > reconnectIntervalMs) {
-      lastReconnectAttemptMillis = nowMs;
-      if (!lastKnownPort.empty() && ofFile::doesFileExist(lastKnownPort)) {
-        {
-          std::lock_guard<std::mutex> lock(connectMutex);
-          pendingConnectPort = lastKnownPort;
-        }
-        requestConnect.store(true);
-        senderCv.notify_all();
-      }
-    }
-  }
-
   updateDownsample();
+  handleOscAcks();
   sendFrameIfDue();
 }
 
@@ -120,70 +76,73 @@ void ofApp::draw() {
 
 //--------------------------------------------------------------
 void ofApp::exit() {
-  stopSenderThread();
   if (videoLoaded) {
     video.stop();
   }
 }
 
 //--------------------------------------------------------------
-void ofApp::refreshPorts() {
-  devices = serial.getDeviceList();
-}
+void ofApp::setupOscSenders() {
+  oscHosts.clear();
+  oscSenders.clear();
 
-//--------------------------------------------------------------
-bool ofApp::autoConnectPort() {
-  if (serialConnected.load()) return true;
-  if (!lastKnownPort.empty() && ofFile::doesFileExist(lastKnownPort)) {
-    {
-      std::lock_guard<std::mutex> lock(connectMutex);
-      pendingConnectPort = lastKnownPort;
-    }
-    requestConnect.store(true);
-    senderCv.notify_all();
-    return true;
-  }
-  if (devices.empty()) refreshPorts();
-  for (size_t i = 0; i < devices.size(); ++i) {
-    const std::string name = devices[i].getDeviceName();
-    const std::string path = devices[i].getDevicePath();
-    const bool looksLikeSerial =
-        name.find("ttyACM") != std::string::npos || name.find("ttyUSB") != std::string::npos ||
-        name.find("usbmodem") != std::string::npos || name.find("COM") != std::string::npos ||
-        path.find("ttyACM") != std::string::npos || path.find("ttyUSB") != std::string::npos ||
-        path.find("usbmodem") != std::string::npos || path.find("COM") != std::string::npos;
-    if (looksLikeSerial) {
-      if (connectToPortIndex(static_cast<int>(i))) return true;
+  const std::string configPath = ofToDataPath("osc_devices.txt", true);
+  if (ofFile::doesFileExist(configPath)) {
+    ofBuffer buffer = ofBufferFromFile(configPath);
+    for (const auto& line : buffer.getLines()) {
+      std::string host = ofTrim(line);
+      if (!host.empty() && host[0] != '#') {
+        oscHosts.push_back(host);
+      }
     }
   }
-  if (!devices.empty()) return connectToPortIndex(0);
-  return false;
-}
 
-//--------------------------------------------------------------
-bool ofApp::connectToPortIndex(int idx) {
-  if (idx < 0 || idx >= static_cast<int>(devices.size())) return false;
-  serialConnected.store(false);
-  selectedPortIndex = idx;
-  connectedPort = devices[idx].getDevicePath();
-  lastKnownPort = connectedPort;
-  {
-    std::lock_guard<std::mutex> lock(connectMutex);
-    pendingConnectPort = connectedPort;
+  if (oscHosts.empty()) {
+    oscHosts.push_back("broadcast");
   }
-  requestConnect.store(true);
-  senderCv.notify_all();
-  return true;
+
+  for (const auto& host : oscHosts) {
+    ofxOscSenderSettings settings;
+    const bool looksLikeBroadcast = host == "broadcast" || host == "255.255.255.255" ||
+                                    ofIsStringInString(host, ".255");
+    settings.host = (host == "broadcast") ? "255.255.255.255" : host;
+    settings.broadcast = looksLikeBroadcast;
+    settings.port = oscPort;
+    ofxOscSender sender;
+    if (sender.setup(settings)) {
+      oscSenders.push_back(std::move(sender));
+    } else {
+      ofLogWarning() << "OSC sender setup failed for host: " << settings.host
+                     << " port: " << settings.port;
+    }
+  }
+
+  oscReady = !oscSenders.empty();
 }
 
 //--------------------------------------------------------------
-void ofApp::closeSerial() {
-  serialConnected.store(false);
-  if (!connectedPort.empty()) lastKnownPort = connectedPort;
-  connectedPort.clear();
-  selectedPortIndex = -1;
-  requestClose.store(true);
-  senderCv.notify_all();
+void ofApp::handleOscAcks() {
+  const uint32_t now = ofGetElapsedTimeMillis();
+  while (ackReceiver.hasWaitingMessages()) {
+    ofxOscMessage msg;
+    ackReceiver.getNextMessage(msg);
+    if (msg.getAddress() != "/leds_ack") {
+      continue;
+    }
+    std::string host = msg.getRemoteHost();
+    if (host.empty()) {
+      host = "unknown";
+    }
+    lastSeenByHost[host] = now;
+  }
+
+  for (auto it = lastSeenByHost.begin(); it != lastSeenByHost.end();) {
+    if (now - it->second > activeDeviceTtlMs) {
+      it = lastSeenByHost.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 //--------------------------------------------------------------
@@ -285,59 +244,39 @@ void ofApp::buildPayload() {
 
 //--------------------------------------------------------------
 void ofApp::sendFrameIfDue() {
-  if (!sendSerial) return;
-  float bytesPerSecond = static_cast<float>(baud) / 10.0f;  // 8N1 framing
-  float maxFps = bytesPerSecond / static_cast<float>(kPacketBytes);
-  maxSendFps = maxFps;
-  float effectiveFps = targetSendFps;
-  if (maxFps > 0.1f && effectiveFps > maxFps) {
-    effectiveFps = maxFps;
-    sendFpsClamped = true;
-  } else {
-    sendFpsClamped = false;
-  }
-  uint32_t intervalMs = effectiveFps <= 0.1f ? 1000 : static_cast<uint32_t>(1000.0f / effectiveFps);
-  uint32_t now = ofGetElapsedTimeMillis();
-  if (now - lastSendMillis < intervalMs) return;
-  lastSendMillis = now;
-  if (!serialConnected.load()) {
-    if (autoConnect) autoConnectPort();
+  if (!sendOsc) {
     return;
   }
-  if (now - serialConnectMillis < 1500) return;  // allow Arduino to reboot
+  const float effectiveFps = std::max(1.0f, targetSendFps);
+  uint32_t intervalMs = static_cast<uint32_t>(1000.0f / effectiveFps);
+  uint32_t now = ofGetElapsedTimeMillis();
+  if (now - lastSendMillis < intervalMs) {
+    return;
+  }
+  lastSendMillis = now;
 
+  if (!oscReady) {
+    framesDropped.fetch_add(1);
+    return;
+  }
   buildPayload();
+  sendOscFrame();
+}
 
-  packet.clear();
-  packet.push_back(kMagic0);
-  packet.push_back(kMagic1);
-  packet.push_back(kProtocolVersion);
-  uint16_t len = kPayloadSize;
-  packet.push_back(len & 0xFF);
-  packet.push_back((len >> 8) & 0xFF);
-  packet.push_back(frameId & 0xFF);
-  packet.push_back((frameId >> 8) & 0xFF);
-  packet.insert(packet.end(), payload.begin(), payload.end());
+//--------------------------------------------------------------
+void ofApp::sendOscFrame() {
+  ofxOscMessage message;
+  message.setAddress(oscAddress);
+  ofBuffer blob(reinterpret_cast<const char*>(payload.data()), payload.size());
+  message.addBlobArg(blob);
 
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 2; i < packet.size(); ++i) {
-    crc = crc16Update(crc, packet[i]);
-  }
-  packet.push_back(crc & 0xFF);
-  packet.push_back((crc >> 8) & 0xFF);
-
-  {
-    std::lock_guard<std::mutex> lock(senderMutex);
-    if (hasPendingPacket) {
-      framesDropped.fetch_add(1);
+  std::lock_guard<std::mutex> lock(oscMutex);
+  for (auto& sender : oscSenders) {
+    if (sender.isReady()) {
+      sender.sendMessage(message, false);
     }
-    pendingPacket = packet;
-    hasPendingPacket = true;
-    lastPacket = packet;
-    hasLastPacket = true;
   }
-  senderCv.notify_one();
-  frameId++;
+  framesSent.fetch_add(1);
 }
 
 //--------------------------------------------------------------
@@ -399,27 +338,36 @@ void ofApp::drawUiText(float x, float y) {
   const float lineH = 14.0f;
   const float sliderH = 10.0f;
   const float sliderGap = 8.0f;
-  const bool connected = serialConnected.load();
-  const std::string statusText = connected ? "CONNECTED" : "DISCONNECTED";
+  const bool connected = oscReady;
+  const std::string statusText = connected ? "OSC READY" : "NO OSC HOSTS";
   const ofColor statusColor = connected ? ofColor(0, 200, 90) : ofColor(220, 60, 60);
 
   std::stringstream ss;
   ss << "Mode: ";
   ss << (source == Source::Video ? "Video" : "MIDI Pattern") << "\n";
-  ss << "Serial: " << (connected ? connectedPort : "[disconnected]") << " @ " << baud;
-  ss << (autoConnect ? " (auto)" : " (manual)") << "\n";
+  ss << "OSC: " << oscAddress << " @ " << oscPort << "  Ack: " << ackPort << "\n";
+  ss << "Configured: " << oscHosts.size() << "  Ready: " << oscSenders.size()
+     << "  Active: " << lastSeenByHost.size() << "\n";
+  if (!oscHosts.empty()) {
+    ss << "Hosts: ";
+    for (size_t i = 0; i < oscHosts.size(); ++i) {
+      if (i > 0) ss << ", ";
+      ss << oscHosts[i];
+    }
+    ss << "\n";
+  }
   ss << "Send FPS: " << targetSendFps << "  Frames sent: " << framesSent.load()
      << " dropped: " << framesDropped.load() << "\n";
-  ss << "Max FPS @ baud: " << maxSendFps << (sendFpsClamped ? " (clamped)" : "") << "\n";
   ss << "Brightness: " << brightnessScalar << "  Mapping: " << (serpentine ? "serpentine" : "linear") << "\n";
   ss << "Vertical flip: " << (verticalFlip ? "on" : "off") << "  Column offset: " << columnOffset << "\n";
-  ss << "Send serial: " << (sendSerial ? "on" : "off") << "\n";
+  ss << "Send OSC: " << (sendOsc ? "on" : "off") << "\n";
   ss << midiStatus << "\n";
   ss << "Controls:\n";
   ss << "  Space play/pause (video)  |  L load file  |  F fullscreen\n";
   ss << "  M switch mode (video/midi)  |  1/2 mapping linear/serpentine  |  V vertical flip  |  [ ] rotate  |  R reset\n";
   ss << "  Up/Down send fps  |  +/- brightness\n";
   ss << "  Line: A/Z angle  |  W/S width  |  O/P rot speed  |  K/I vertical speed  |  Q pause anim\n";
+  ss << "  Edit bin/data/osc_devices.txt to set ESP32 IPs\n";
   ss << "  Drag-and-drop a video file onto window\n";
   const glm::vec2 textSize = estimateBitmapStringSize(ss.str(), charW, charH, lineH);
 
@@ -513,10 +461,6 @@ void ofApp::keyPressed(int key) {
     case 'i': case 'I': verticalSpeedPxPerSec = ofClamp(verticalSpeedPxPerSec - 0.5f, -20.0f, 20.0f); break;
     case 'q': case 'Q': pauseAutomation = !pauseAutomation; break;
     default:
-      if (key >= '0' && key <= '9') {
-        int idx = key - '0';
-        connectToPortIndex(idx);
-      }
       break;
   }
 }
@@ -543,99 +487,6 @@ void ofApp::mouseReleased(int x, int y, int button) { brightnessSliderActive = f
 
 //--------------------------------------------------------------
 void ofApp::dragEvent(ofDragInfo dragInfo) { if (!dragInfo.files.empty()) loadVideo(dragInfo.files[0]); }
-
-//--------------------------------------------------------------
-void ofApp::startSenderThread() {
-  senderStop.store(false);
-  senderThread = std::thread(&ofApp::senderThreadLoop, this);
-}
-
-//--------------------------------------------------------------
-void ofApp::stopSenderThread() {
-  senderStop.store(true);
-  senderCv.notify_all();
-  if (senderThread.joinable()) senderThread.join();
-  {
-    std::lock_guard<std::mutex> serialLock(serialMutex);
-    if (serial.isInitialized()) serial.close();
-  }
-  requestClose.store(false);
-}
-
-//--------------------------------------------------------------
-void ofApp::senderThreadLoop() {
-  while (!senderStop.load()) {
-    std::vector<uint8_t> toSend;
-    {
-      std::unique_lock<std::mutex> lock(senderMutex);
-      senderCv.wait_for(lock, std::chrono::milliseconds(100), [&] {
-        return senderStop.load() || hasPendingPacket || requestClose.load() || requestConnect.load();
-      });
-      if (senderStop.load()) break;
-      if (requestClose.load()) {
-        requestClose.store(false);
-        hasPendingPacket = false;
-        lock.unlock();
-        std::lock_guard<std::mutex> serialLock(serialMutex);
-        if (serial.isInitialized()) serial.close();
-        continue;
-      }
-      if (requestConnect.load()) {
-        requestConnect.store(false);
-        std::string port;
-        {
-          std::lock_guard<std::mutex> portLock(connectMutex);
-          port = pendingConnectPort;
-        }
-        lock.unlock();
-        if (!port.empty()) {
-          std::lock_guard<std::mutex> serialLock(serialMutex);
-          if (serial.isInitialized()) serial.close();
-          bool ok = serial.setup(port, baud);
-          if (ok && serial.isInitialized()) {
-            serial.flush(true, true);
-            connectedPort = port;
-            serialConnected.store(true);
-            serialConnectMillis = ofGetElapsedTimeMillis();
-            ofLogNotice() << "Connected to " << connectedPort << " @ " << baud;
-          } else {
-            serial.close();
-            serialConnected.store(false);
-          }
-        }
-        continue;
-      }
-      if (hasPendingPacket) {
-        toSend = pendingPacket;
-        hasPendingPacket = false;
-      } else {
-        uint32_t now = ofGetElapsedTimeMillis();
-        uint32_t lastWrite = lastWriteMillis.load();
-        if (hasLastPacket && serialConnected.load() && now - lastWrite > 400) {
-          toSend = lastPacket;
-        }
-      }
-    }
-    if (toSend.empty()) continue;
-    if (!serialConnected.load()) { framesDropped.fetch_add(1); continue; }
-    long written = OF_SERIAL_ERROR;
-    {
-      std::lock_guard<std::mutex> serialLock(serialMutex);
-      if (serial.isInitialized()) {
-        written = serial.writeBytes(toSend.data(), toSend.size());
-      }
-    }
-    if (written < 0 || static_cast<size_t>(written) < toSend.size()) {
-      framesDropped.fetch_add(1);
-      serialConnected.store(false);
-      requestClose.store(true);
-      senderCv.notify_all();
-      continue;
-    }
-    framesSent.fetch_add(1);
-    lastWriteMillis.store(ofGetElapsedTimeMillis());
-  }
-}
 
 //--------------------------------------------------------------
 void ofApp::setupMidi() {
@@ -730,12 +581,10 @@ void ofApp::newMidiMessage(ofxMidiMessage &msg) {
       case 23: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); b = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
       // Solo/Mute/Rec buttons examples
       case 32: if (v > 0) pauseAutomation = !pauseAutomation; break; // Solo 1
-      case 48: if (v > 0) sendSerial = !sendSerial; break; // Mute 1 toggles serial send
+      case 48: if (v > 0) sendOsc = !sendOsc; break; // Mute 1 toggles OSC send
       case 49: if (v > 0) { // Mute 2 cycles mode video/midi
         source = (source == Source::Video) ? Source::MidiPattern : Source::Video;
       } break;
-      case 64: if (v > 0) autoConnect = true; break;   // Rec 1 enables auto-connect
-      case 65: if (v > 0) { autoConnect = false; closeSerial(); } break; // Rec 2 disconnect
       default: break;
     }
   }
