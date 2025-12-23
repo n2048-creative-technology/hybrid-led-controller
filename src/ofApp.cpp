@@ -23,6 +23,7 @@ glm::vec2 estimateBitmapStringSize(const std::string& text, float charW, float c
 constexpr const char* kPresetFilename = "midi_presets.json";
 constexpr uint8_t kSerialHeaderA = 0xAA;
 constexpr uint8_t kSerialHeaderB = 0x55;
+constexpr uint8_t kSerialFlagKeepalive = 0x02;
 
 uint16_t computeSerialChecksum(uint8_t targetId, uint8_t flags, uint16_t payloadLen,
                                const std::vector<uint8_t>& payload) {
@@ -79,6 +80,16 @@ void ofApp::update() {
   }
 
   updateDownsample();
+  if (serialReady && !serialDevice.empty()) {
+    if (!std::filesystem::exists(serialDevice)) {
+      serialReady = false;
+      serialStatus = "Serial: Disconnected";
+      if (serial.isInitialized()) {
+        serial.close();
+      }
+      lastSerialAttemptMs = ofGetElapsedTimeMillis();
+    }
+  }
   if (!serialReady) {
     uint32_t now = ofGetElapsedTimeMillis();
     if (now - lastSerialAttemptMs >= serialReconnectDelayMs) {
@@ -92,6 +103,7 @@ void ofApp::update() {
     }
   }
   sendFrameIfDue();
+  sendSerialKeepalive();
 }
 
 //--------------------------------------------------------------
@@ -157,6 +169,7 @@ void ofApp::drawLinePatternPixels() {
   if (phase < 0) phase += 1.0f;
   auto periodicDelta = [](float x, float y, float p){ float d = fmodf(x - y + p * 0.5f, p) - p * 0.5f; return fabsf(d); };
   float widthNorm = lineWidth / (float)std::max(kCols, kRows);
+  const bool forceFullOn = (lineWidth >= 11.9f) && (lineFalloff >= 0.99f);
 
   ofColor base(lineColor);
   for (int s = 0; s < kCols; ++s) {
@@ -165,7 +178,12 @@ void ofApp::drawLinePatternPixels() {
       float yy = (y + 0.5f) / (float)kRows;
       float v = ss * n.x + yy * n.y;
       float d = periodicDelta(v, phase, 1.0f);
-      float intensity = ofClamp(1.0f - d / std::max(0.0001f, widthNorm), 0.0f, 1.0f);
+      float intensity = 1.0f;
+      if (!forceFullOn) {
+        float baseIntensity = ofClamp(1.0f - d / std::max(0.0001f, widthNorm), 0.0f, 1.0f);
+        float hardMask = (d <= widthNorm) ? 1.0f : 0.0f;
+        intensity = ofLerp(baseIntensity, hardMask, ofClamp(lineFalloff, 0.0f, 1.0f));
+      }
       ofColor c = base * intensity;
       int yTop = (kRows - 1) - y;  // top-origin storage
       downsamplePixels.setColor(s, yTop, c);
@@ -191,9 +209,10 @@ void ofApp::buildPayload() {
         sampleY = (kRows - 1) - sampleY;
       }
       ofColor c = downsamplePixels.getColor(x, sampleY);
-      uint8_t r = static_cast<uint8_t>(ofClamp(c.r * brightnessScalar, 0.0f, 255.0f));
-      uint8_t g = static_cast<uint8_t>(ofClamp(c.g * brightnessScalar, 0.0f, 255.0f));
-      uint8_t b = static_cast<uint8_t>(ofClamp(c.b * brightnessScalar, 0.0f, 255.0f));
+      const float ledBrightness = powf(ofClamp(brightnessScalar, 0.0f, 1.0f), brightnessGamma);
+      uint8_t r = static_cast<uint8_t>(ofClamp(c.r * ledBrightness, 0.0f, 255.0f));
+      uint8_t g = static_cast<uint8_t>(ofClamp(c.g * ledBrightness, 0.0f, 255.0f));
+      uint8_t b = static_cast<uint8_t>(ofClamp(c.b * ledBrightness, 0.0f, 255.0f));
 
       int yMapped = y;
       if (serpentine && (xRot % 2 == 1)) {
@@ -208,6 +227,10 @@ void ofApp::buildPayload() {
   }
 }
 
+static ofFloatColor hsbToFloatColor(float h, float s, float b) {
+  return ofFloatColor::fromHsb(h / 255.0f, s / 255.0f, b / 255.0f);
+}
+
 //--------------------------------------------------------------
 void ofApp::sendFrameIfDue() {
   if (!sendOsc) {
@@ -219,6 +242,9 @@ void ofApp::sendFrameIfDue() {
   const float effectiveFps = std::max(1.0f, std::min(targetSendFps, maxSerialFps));
   uint32_t intervalMs = static_cast<uint32_t>(1000.0f / effectiveFps);
   uint32_t now = ofGetElapsedTimeMillis();
+  if (now < serialBackoffUntilMs) {
+    return;
+  }
   if (now - lastSendMillis < intervalMs) {
     return;
   }
@@ -297,6 +323,8 @@ bool ofApp::setupSerial() {
       serialReady = true;
       serialDevice = desired;
       serialStatus = std::string("Serial: ") + serialDevice;
+      serialConsecutiveErrors = 0;
+      serialLastOkMs = ofGetElapsedTimeMillis();
       return true;
     } else {
       serialReady = false;
@@ -354,6 +382,8 @@ bool ofApp::setupSerial() {
     } else {
       serialStatus = std::string("Serial: ") + serialDevice;
     }
+    serialConsecutiveErrors = 0;
+    serialLastOkMs = ofGetElapsedTimeMillis();
     return true;
   } else {
     serialReady = false;
@@ -394,16 +424,76 @@ void ofApp::sendSerialFrame() {
   const int written = serial.writeBytes(serialFrame.data(), static_cast<int>(serialFrame.size()));
   if (written == static_cast<int>(serialFrame.size())) {
     framesSent.fetch_add(1);
+    serialConsecutiveErrors = 0;
+    serialLastOkMs = ofGetElapsedTimeMillis();
+    serialBackoffUntilMs = 0;
   } else {
     framesDropped.fetch_add(1);
-    if (written < 0) {
-      serialReady = false;
-      serialStatus = "Serial: Disconnected";
-      if (serial.isInitialized()) {
-        serial.close();
+    if (written <= 0) {
+      serialConsecutiveErrors++;
+      const uint32_t now = ofGetElapsedTimeMillis();
+      serialBackoffUntilMs = now + 100;
+      if (serialConsecutiveErrors >= 20 || (now - serialLastOkMs) > 10000) {
+        if (!serialDevice.empty() && !std::filesystem::exists(serialDevice)) {
+          serialReady = false;
+          serialStatus = "Serial: Disconnected";
+          if (serial.isInitialized()) {
+            serial.close();
+          }
+          lastSerialAttemptMs = now;
+        } else {
+          serialStatus = "Serial: Write stalled";
+        }
       }
-      lastSerialAttemptMs = ofGetElapsedTimeMillis();
     }
+  }
+}
+
+//--------------------------------------------------------------
+void ofApp::sendSerialKeepalive() {
+  if (!serialReady) {
+    return;
+  }
+  const uint32_t now = ofGetElapsedTimeMillis();
+  if (now < serialBackoffUntilMs) {
+    return;
+  }
+  if ((now - serialLastOkMs) < serialKeepaliveIntervalMs) {
+    return;
+  }
+  if ((now - lastKeepaliveMs) < serialKeepaliveIntervalMs) {
+    return;
+  }
+  lastKeepaliveMs = now;
+
+  const uint8_t payloadByte = 0x00;
+  const uint16_t payloadLen = 1;
+  const uint8_t flags = kSerialFlagKeepalive;
+  const uint16_t checksum = computeSerialChecksum(static_cast<uint8_t>(targetId), flags, payloadLen,
+                                                   std::vector<uint8_t>{payloadByte});
+  const size_t frameSize = 2 + 1 + 1 + 2 + payloadLen + 2;
+  if (serialFrame.size() != frameSize) {
+    serialFrame.resize(frameSize);
+  }
+  size_t offset = 0;
+  serialFrame[offset++] = kSerialHeaderA;
+  serialFrame[offset++] = kSerialHeaderB;
+  serialFrame[offset++] = static_cast<uint8_t>(targetId);
+  serialFrame[offset++] = flags;
+  serialFrame[offset++] = static_cast<uint8_t>(payloadLen & 0xFF);
+  serialFrame[offset++] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
+  serialFrame[offset++] = payloadByte;
+  serialFrame[offset++] = static_cast<uint8_t>(checksum & 0xFF);
+  serialFrame[offset++] = static_cast<uint8_t>((checksum >> 8) & 0xFF);
+
+  const int written = serial.writeBytes(serialFrame.data(), static_cast<int>(serialFrame.size()));
+  if (written == static_cast<int>(serialFrame.size())) {
+    serialConsecutiveErrors = 0;
+    serialLastOkMs = now;
+    serialBackoffUntilMs = 0;
+  } else if (written <= 0) {
+    serialConsecutiveErrors++;
+    serialBackoffUntilMs = now + 100;
   }
 }
 
@@ -732,6 +822,7 @@ void ofApp::loadPresetsFromFile() {
     preset.verticalSpeedPxPerSec = entry.value("verticalSpeedPxPerSec", preset.verticalSpeedPxPerSec);
     preset.pauseAutomation = entry.value("pauseAutomation", preset.pauseAutomation);
     preset.automationPhase = entry.value("automationPhase", preset.automationPhase);
+    preset.lineFalloff = entry.value("lineFalloff", preset.lineFalloff);
     if (entry.contains("lineColor") && entry["lineColor"].is_array()) {
       const auto& col = entry["lineColor"];
       if (col.size() >= 3) {
@@ -742,6 +833,17 @@ void ofApp::loadPresetsFromFile() {
           col.size() > 3 ? col[3].get<float>() : 1.0f
         );
       }
+    }
+    preset.lineHue = entry.value("lineHue", preset.lineHue);
+    preset.lineSat = entry.value("lineSat", preset.lineSat);
+    preset.lineBri = entry.value("lineBri", preset.lineBri);
+    if (!entry.contains("lineHue") || !entry.contains("lineSat") || !entry.contains("lineBri")) {
+      ofColor c(preset.lineColor);
+      float h = 0.0f, s = 0.0f, b = 0.0f;
+      c.getHsb(h, s, b);
+      preset.lineHue = h;
+      preset.lineSat = s;
+      preset.lineBri = b;
     }
     preset.serpentine = entry.value("serpentine", preset.serpentine);
     preset.verticalFlip = entry.value("verticalFlip", preset.verticalFlip);
@@ -772,7 +874,11 @@ void ofApp::savePresetsToFile() const {
     entry["verticalSpeedPxPerSec"] = preset.verticalSpeedPxPerSec;
     entry["pauseAutomation"] = preset.pauseAutomation;
     entry["automationPhase"] = preset.automationPhase;
+    entry["lineFalloff"] = preset.lineFalloff;
     entry["lineColor"] = {preset.lineColor.r, preset.lineColor.g, preset.lineColor.b, preset.lineColor.a};
+    entry["lineHue"] = preset.lineHue;
+    entry["lineSat"] = preset.lineSat;
+    entry["lineBri"] = preset.lineBri;
     entry["serpentine"] = preset.serpentine;
     entry["verticalFlip"] = preset.verticalFlip;
     entry["columnOffset"] = preset.columnOffset;
@@ -799,7 +905,11 @@ void ofApp::storePreset(int idx) {
   preset.verticalSpeedPxPerSec = verticalSpeedPxPerSec;
   preset.pauseAutomation = pauseAutomation;
   preset.automationPhase = automationPhase;
+  preset.lineFalloff = lineFalloff;
   preset.lineColor = lineColor;
+  preset.lineHue = lineHue;
+  preset.lineSat = lineSat;
+  preset.lineBri = lineBri;
   preset.serpentine = serpentine;
   preset.verticalFlip = verticalFlip;
   preset.columnOffset = columnOffset;
@@ -827,7 +937,12 @@ void ofApp::recallPreset(int idx) {
   verticalSpeedPxPerSec = preset.verticalSpeedPxPerSec;
   pauseAutomation = preset.pauseAutomation;
   automationPhase = preset.automationPhase;
+  lineFalloff = preset.lineFalloff;
   lineColor = preset.lineColor;
+  lineHue = preset.lineHue;
+  lineSat = preset.lineSat;
+  lineBri = preset.lineBri;
+  lineColor = hsbToFloatColor(lineHue, lineSat, lineBri);
   serpentine = preset.serpentine;
   verticalFlip = preset.verticalFlip;
   columnOffset = preset.columnOffset;
@@ -870,11 +985,11 @@ void ofApp::newMidiMessage(ofxMidiMessage &msg) {
       case 2:  rotationSpeedDegPerSec = toBipolar() * 360.0f; break;
       case 3:  verticalSpeedPxPerSec = toBipolar() * 20.0f; break;
       case 4:  automationPhase = toRange(0.0f, 1.0f); break;
-      case 5:  { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); h = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
-      case 6:  { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); s = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
-      case 7:  { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); b = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
+      case 5:  lineHue = toRange(0.0f, 255.0f); lineColor = hsbToFloatColor(lineHue, lineSat, lineBri); break;
+      case 6:  lineSat = toRange(0.0f, 255.0f); lineColor = hsbToFloatColor(lineHue, lineSat, lineBri); break;
+      case 7:  lineBri = toRange(0.0f, 255.0f); lineColor = hsbToFloatColor(lineHue, lineSat, lineBri); break;
       // Knobs 16..23 mirror
-      // case 16: lineWidth = toRange(0.5f, 12.0f); break;
+      case 16: lineFalloff = toRange(0.0f, 1.0f); break;
       // case 17: angleDeg = toRange(0.0f, 90.0f); break;
       // case 18: rotationSpeedDegPerSec = toBipolar() * 360.0f; break;
       // case 19: verticalSpeedPxPerSec = toBipolar() * 20.0f; break;

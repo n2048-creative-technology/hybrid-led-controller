@@ -2,13 +2,27 @@
 #include <algorithm>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_system.h>
 
 // ---------------------------------------------------------------------------
 // ESP-NOW host bridge (serial -> ESP-NOW) with autodiscovery
 // ---------------------------------------------------------------------------
+#ifndef SERIAL_DEBUG
+#define SERIAL_DEBUG 0
+#endif
+
+#if SERIAL_DEBUG
+#define DBG_PRINT(...) Serial.print(__VA_ARGS__)
+#define DBG_PRINTLN(...) Serial.println(__VA_ARGS__)
+#else
+#define DBG_PRINT(...) do {} while (0)
+#define DBG_PRINTLN(...) do {} while (0)
+#endif
+
 static constexpr uint32_t kSerialBaud = 115200;
 static constexpr uint8_t kSerialHeaderA = 0xAA;
 static constexpr uint8_t kSerialHeaderB = 0x55;
+static constexpr uint8_t kSerialFlagKeepalive = 0x02;
 
 static constexpr uint16_t kPayloadSize = 12 * 19 * 3;
 static constexpr uint16_t kChunkSize = 200;
@@ -56,6 +70,10 @@ static uint32_t serialFramesOk = 0;
 static uint32_t serialFramesBad = 0;
 static uint32_t espNowSends = 0;
 static uint32_t lastDebugMs = 0;
+static uint32_t parserResets = 0;
+static uint32_t lastSerialByteMs = 0;
+static esp_reset_reason_t lastResetReason = ESP_RST_UNKNOWN;
+static uint32_t lastResetMillis = 0;
 
 static bool decodeRleToRaw(const uint8_t *src, uint16_t srcLen, uint8_t *dst, uint16_t dstLen) {
   uint16_t srcPos = 0;
@@ -84,12 +102,12 @@ static bool macLess(const uint8_t *a, const uint8_t *b) {
 static void printMac(const uint8_t *mac) {
   for (int i = 0; i < 6; ++i) {
     if (i > 0) {
-      Serial.print(':');
+      DBG_PRINT(':');
     }
     if (mac[i] < 16) {
-      Serial.print('0');
+      DBG_PRINT('0');
     }
-    Serial.print(mac[i], HEX);
+    DBG_PRINT(mac[i], HEX);
   }
 }
 
@@ -137,13 +155,13 @@ static void sortPeers() {
 }
 
 static void printPeerMap() {
-  Serial.println("Discovered satellites:");
+  DBG_PRINTLN("Discovered satellites:");
   for (size_t i = 0; i < peerCount; ++i) {
-    Serial.print("ID ");
-    Serial.print(i + 1);
-    Serial.print(" -> ");
+    DBG_PRINT("ID ");
+    DBG_PRINT(i + 1);
+    DBG_PRINT(" -> ");
     printMac(peers[i].mac);
-    Serial.println();
+    DBG_PRINTLN();
   }
 }
 
@@ -206,7 +224,32 @@ static void sendDiscovery() {
   esp_now_send(broadcastMac, kDiscoveryMsg, sizeof(kDiscoveryMsg));
 }
 
+static const char* resetReasonToString(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON: return "poweron";
+    case ESP_RST_EXT: return "external";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: return "int_wdt";
+    case ESP_RST_TASK_WDT: return "task_wdt";
+    case ESP_RST_WDT: return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO: return "sdio";
+    default: return "unknown";
+  }
+}
+
+static void printResetReason() {
+  Serial.print("Reset reason: ");
+  Serial.print(resetReasonToString(lastResetReason));
+  Serial.print(" uptime_ms=");
+  Serial.println(lastResetMillis);
+}
+
 static void handleByte(uint8_t b) {
+  const uint32_t now = millis();
+  lastSerialByteMs = now;
   switch (parseState) {
     case ParseState::WaitA:
       if (b == kSerialHeaderA) {
@@ -235,6 +278,7 @@ static void handleByte(uint8_t b) {
       payloadLen |= static_cast<uint16_t>(b) << 8;
       checksum = static_cast<uint16_t>(checksum + b);
       if (payloadLen == 0 || payloadLen > kPayloadSize) {
+        parserResets++;
         parseState = ParseState::WaitA;
       } else {
         payloadPos = 0;
@@ -242,6 +286,11 @@ static void handleByte(uint8_t b) {
       }
       break;
     case ParseState::Payload:
+      if (payloadPos >= payloadLen) {
+        parserResets++;
+        parseState = ParseState::WaitA;
+        break;
+      }
       payload[payloadPos++] = b;
       checksum = static_cast<uint16_t>(checksum + b);
       if (payloadPos >= payloadLen) {
@@ -255,6 +304,11 @@ static void handleByte(uint8_t b) {
     case ParseState::Ck2:
       checksumRx |= static_cast<uint16_t>(b) << 8;
       if (checksumRx == checksum) {
+        if ((payloadFlags & kSerialFlagKeepalive) != 0) {
+          serialFramesOk++;
+          parseState = ParseState::WaitA;
+          break;
+        }
         bool ok = true;
         const bool isRle = (payloadFlags & 0x01) != 0;
         const uint8_t *sendBuf = payload;
@@ -269,26 +323,26 @@ static void handleByte(uint8_t b) {
           frameId++;
           serialFramesOk++;
           if (serialFramesOk <= 5) {
-            Serial.print("Serial frame ok: target=");
-            Serial.print(targetId);
-            Serial.print(" len=");
-            Serial.print(payloadLen);
-            Serial.print(" flags=");
-            Serial.println(payloadFlags);
+            DBG_PRINT("Serial frame ok: target=");
+            DBG_PRINT(targetId);
+            DBG_PRINT(" len=");
+            DBG_PRINT(payloadLen);
+            DBG_PRINT(" flags=");
+            DBG_PRINTLN(payloadFlags);
           }
         } else {
           serialFramesBad++;
           if (serialFramesBad <= 5) {
-            Serial.println("Serial decode failed");
+            DBG_PRINTLN("Serial decode failed");
           }
         }
       } else {
         serialFramesBad++;
         if (serialFramesBad <= 5) {
-          Serial.print("Serial checksum mismatch: got=");
-          Serial.print(checksumRx);
-          Serial.print(" expected=");
-          Serial.println(checksum);
+          DBG_PRINT("Serial checksum mismatch: got=");
+          DBG_PRINT(checksumRx);
+          DBG_PRINT(" expected=");
+          DBG_PRINTLN(checksum);
         }
       }
       parseState = ParseState::WaitA;
@@ -298,13 +352,15 @@ static void handleByte(uint8_t b) {
 
 void setup() {
   Serial.begin(kSerialBaud);
-  Serial.setRxBufferSize(8192);
+  Serial.setRxBufferSize(16384);
+  lastResetReason = esp_reset_reason();
+  lastResetMillis = millis();
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
 
   if (esp_now_init() != ESP_OK) {
-    Serial.println("ESP-NOW init failed");
+    DBG_PRINTLN("ESP-NOW init failed");
     return;
   }
   esp_now_register_recv_cb(onEspNowRecv);
@@ -315,10 +371,17 @@ void setup() {
   broadcastPeer.encrypt = false;
   esp_now_add_peer(&broadcastPeer);
 
-  Serial.println("ESP-NOW host ready");
+  DBG_PRINTLN("ESP-NOW host ready");
 }
 
 void loop() {
+  if (Serial.available() > 0) {
+    int peek = Serial.peek();
+    if (peek == '?') {
+      Serial.read();
+      printResetReason();
+    }
+  }
   while (Serial.available() > 0) {
     uint8_t b = static_cast<uint8_t>(Serial.read());
     handleByte(b);
@@ -326,6 +389,10 @@ void loop() {
 
   static uint32_t lastDiscovery = 0;
   const uint32_t now = millis();
+  if (parseState != ParseState::WaitA && (now - lastSerialByteMs) > 50) {
+    parserResets++;
+    parseState = ParseState::WaitA;
+  }
   if (now - lastDiscovery > kDiscoveryIntervalMs) {
     lastDiscovery = now;
     sendDiscovery();
@@ -333,13 +400,17 @@ void loop() {
 
   if (now - lastDebugMs > 1000) {
     lastDebugMs = now;
-    Serial.print("Debug: peers=");
-    Serial.print(peerCount);
-    Serial.print(" serial_ok=");
-    Serial.print(serialFramesOk);
-    Serial.print(" serial_bad=");
-    Serial.print(serialFramesBad);
-    Serial.print(" espnow_sends=");
-    Serial.println(espNowSends);
+    if (SERIAL_DEBUG) {
+      DBG_PRINT("Debug: peers=");
+      DBG_PRINT(peerCount);
+      DBG_PRINT(" serial_ok=");
+      DBG_PRINT(serialFramesOk);
+      DBG_PRINT(" serial_bad=");
+      DBG_PRINT(serialFramesBad);
+      DBG_PRINT(" resets=");
+      DBG_PRINT(parserResets);
+      DBG_PRINT(" espnow_sends=");
+      DBG_PRINTLN(espNowSends);
+    }
   }
 }

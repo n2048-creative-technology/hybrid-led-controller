@@ -58,6 +58,7 @@ private:
   void sendFrameIfDue();
   bool setupSerial();
   void sendSerialFrame();
+  void sendSerialKeepalive();
   void encodeRlePayload();
 
   static constexpr int kCols = 12;
@@ -77,12 +78,16 @@ private:
 
   // Line/pattern params (from cylinder-led-controller)
   ofFloatColor lineColor = ofFloatColor::fromHsb(160.0f/255.0f, 1.0f, 1.0f);
+  float lineHue = 160.0f;                // 0..255
+  float lineSat = 255.0f;                // 0..255
+  float lineBri = 255.0f;                // 0..255
   float lineWidth = 2.0f;                 // px in grid-space
   float angleDeg = 0.0f;                  // 0..90
   float rotationSpeedDegPerSec = 30.0f;   // -360..360
   float verticalSpeedPxPerSec = 2.0f;     // -20..20 in grid px/s
   bool pauseAutomation = false;
   float automationPhase = 0.0f;           // 0..1
+  float lineFalloff = 0.0f;               // 0..1 (soft -> hard edge)
   float globalTime = 0.0f;
 
   // Mapping
@@ -94,6 +99,7 @@ private:
   // Sender timing
   float targetSendFps = 30.0f;
   float brightnessScalar = 0.8f;
+  float brightnessGamma = 8.0f;
   bool sendOsc = true;                 // allow pausing sender via MIDI
   bool blackout = false;
 
@@ -130,6 +136,11 @@ private:
   uint32_t serialReconnectDelayMs = 1000;
   uint32_t lastSerialAttemptMs = 0;
   float maxSerialFps = 0.0f;
+  uint32_t serialConsecutiveErrors = 0;
+  uint32_t serialLastOkMs = 0;
+  uint32_t serialBackoffUntilMs = 0;
+  uint32_t serialKeepaliveIntervalMs = 500;
+  uint32_t lastKeepaliveMs = 0;
 
   struct Preset {
     bool hasData = false;
@@ -140,7 +151,11 @@ private:
     float verticalSpeedPxPerSec = 2.0f;
     bool pauseAutomation = false;
     float automationPhase = 0.0f;
+    float lineFalloff = 0.0f;
     ofFloatColor lineColor = ofFloatColor::fromHsb(160.0f/255.0f, 1.0f, 1.0f);
+    float lineHue = 160.0f;
+    float lineSat = 255.0f;
+    float lineBri = 255.0f;
     bool serpentine = false;
     bool verticalFlip = false;
     int columnOffset = 0;

@@ -1,42 +1,44 @@
 {
     "presets": [
         {
-            "angleDeg": 90.0,
+            "angleDeg": 0.0,
             "automationPhase": 0.0,
             "blackout": false,
             "brightnessScalar": 0.800000011920929,
             "columnOffset": 0,
             "hasData": true,
             "lineColor": [
+                1.0,
                 0.0,
-                0.7372549176216125,
-                0.3607843220233917,
+                0.0,
                 1.0
             ],
-            "lineWidth": 11.909448623657227,
+            "lineFalloff": 1.0,
+            "lineWidth": 12.0,
             "pauseAutomation": false,
-            "rotationSpeedDegPerSec": -257.9527587890625,
+            "rotationSpeedDegPerSec": 30.0,
             "sendOsc": true,
             "serpentine": false,
             "source": "midi",
             "targetSendFps": 30.0,
             "verticalFlip": false,
-            "verticalSpeedPxPerSec": 20.0
+            "verticalSpeedPxPerSec": 2.0
         },
         {
-            "angleDeg": 89.29133605957031,
-            "automationPhase": 0.9921259880065918,
+            "angleDeg": 0.0,
+            "automationPhase": 0.0,
             "blackout": false,
             "brightnessScalar": 0.800000011920929,
             "columnOffset": 0,
             "hasData": true,
             "lineColor": [
-                0.917647123336792,
-                0.5960784554481506,
-                0.5960784554481506,
+                0.6901960968971252,
+                0.16470588743686676,
+                0.16470588743686676,
                 1.0
             ],
-            "lineWidth": 0.5,
+            "lineFalloff": 0.0,
+            "lineWidth": 12.0,
             "pauseAutomation": false,
             "rotationSpeedDegPerSec": 360.0,
             "sendOsc": true,
@@ -44,7 +46,7 @@
             "source": "midi",
             "targetSendFps": 30.0,
             "verticalFlip": false,
-            "verticalSpeedPxPerSec": 19.685039520263672
+            "verticalSpeedPxPerSec": 2.0
         },
         {
             "angleDeg": 90.0,
@@ -59,6 +61,7 @@
                 0.7764706611633301,
                 1.0
             ],
+            "lineFalloff": 0.0,
             "lineWidth": 12.0,
             "pauseAutomation": false,
             "rotationSpeedDegPerSec": 360.0,
@@ -75,6 +78,30 @@
             "blackout": false,
             "brightnessScalar": 0.800000011920929,
             "columnOffset": 0,
+            "hasData": true,
+            "lineColor": [
+                0.02352941408753395,
+                0.02352941408753395,
+                0.02352941408753395,
+                1.0
+            ],
+            "lineFalloff": 1.0,
+            "lineWidth": 12.0,
+            "pauseAutomation": false,
+            "rotationSpeedDegPerSec": 240.9449005126953,
+            "sendOsc": true,
+            "serpentine": false,
+            "source": "midi",
+            "targetSendFps": 30.0,
+            "verticalFlip": false,
+            "verticalSpeedPxPerSec": 9.60629940032959
+        },
+        {
+            "angleDeg": 0.0,
+            "automationPhase": 0.0,
+            "blackout": false,
+            "brightnessScalar": 0.800000011920929,
+            "columnOffset": 0,
             "hasData": false,
             "lineColor": [
                 0.0,
@@ -82,6 +109,7 @@
                 1.0,
                 1.0
             ],
+            "lineFalloff": 0.0,
             "lineWidth": 2.0,
             "pauseAutomation": false,
             "rotationSpeedDegPerSec": 30.0,
@@ -105,6 +133,7 @@
                 1.0,
                 1.0
             ],
+            "lineFalloff": 0.0,
             "lineWidth": 2.0,
             "pauseAutomation": false,
             "rotationSpeedDegPerSec": 30.0,
@@ -128,6 +157,7 @@
                 1.0,
                 1.0
             ],
+            "lineFalloff": 0.0,
             "lineWidth": 2.0,
             "pauseAutomation": false,
             "rotationSpeedDegPerSec": 30.0,
@@ -151,29 +181,7 @@
                 1.0,
                 1.0
             ],
-            "lineWidth": 2.0,
-            "pauseAutomation": false,
-            "rotationSpeedDegPerSec": 30.0,
-            "sendOsc": true,
-            "serpentine": false,
-            "source": "video",
-            "targetSendFps": 30.0,
-            "verticalFlip": false,
-            "verticalSpeedPxPerSec": 2.0
-        },
-        {
-            "angleDeg": 0.0,
-            "automationPhase": 0.0,
-            "blackout": false,
-            "brightnessScalar": 0.800000011920929,
-            "columnOffset": 0,
-            "hasData": false,
-            "lineColor": [
-                0.0,
-                0.23529386520385742,
-                1.0,
-                1.0
-            ],
+            "lineFalloff": 0.0,
             "lineWidth": 2.0,
             "pauseAutomation": false,
             "rotationSpeedDegPerSec": 30.0,
