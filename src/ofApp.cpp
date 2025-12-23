@@ -18,6 +18,8 @@ glm::vec2 estimateBitmapStringSize(const std::string& text, float charW, float c
   maxLen = std::max(maxLen, lineLen);
   return {static_cast<float>(maxLen) * charW, static_cast<float>(lines) * lineH};
 }
+
+constexpr const char* kPresetFilename = "midi_presets.json";
 }
 
 //--------------------------------------------------------------
@@ -39,6 +41,8 @@ void ofApp::setup() {
 
   // MIDI setup
   setupMidi();
+  presetsPath = ofToDataPath(kPresetFilename, true);
+  loadPresetsFromFile();
 }
 
 //--------------------------------------------------------------
@@ -213,6 +217,10 @@ void ofApp::drawLinePatternPixels() {
 
 //--------------------------------------------------------------
 void ofApp::buildPayload() {
+  if (blackout) {
+    std::fill(payload.begin(), payload.end(), 0);
+    return;
+  }
   // Map downsamplePixels (top-origin) to payload according to mapping controls
   // Use mapping approach compatible with video-to-LED-matrix
   for (int x = 0; x < kCols; ++x) {
@@ -360,7 +368,7 @@ void ofApp::drawUiText(float x, float y) {
      << " dropped: " << framesDropped.load() << "\n";
   ss << "Brightness: " << brightnessScalar << "  Mapping: " << (serpentine ? "serpentine" : "linear") << "\n";
   ss << "Vertical flip: " << (verticalFlip ? "on" : "off") << "  Column offset: " << columnOffset << "\n";
-  ss << "Send OSC: " << (sendOsc ? "on" : "off") << "\n";
+  ss << "Send OSC: " << (sendOsc ? "on" : "off") << "  Blackout: " << (blackout ? "on" : "off") << "\n";
   ss << midiStatus << "\n";
   ss << "Controls:\n";
   ss << "  Space play/pause (video)  |  L load file  |  F fullscreen\n";
@@ -535,6 +543,143 @@ void ofApp::setupMidi() {
 }
 
 //--------------------------------------------------------------
+void ofApp::loadPresetsFromFile() {
+  if (presetsPath.empty() || !ofFile::doesFileExist(presetsPath)) {
+    return;
+  }
+  ofJson root;
+  try {
+    root = ofLoadJson(presetsPath);
+  } catch (const std::exception& e) {
+    ofLogWarning() << "Failed to read presets: " << e.what();
+    return;
+  }
+  if (!root.contains("presets") || !root["presets"].is_array()) {
+    return;
+  }
+  const auto& arr = root["presets"];
+  const size_t count = std::min(arr.size(), static_cast<size_t>(kPresetCount));
+  for (size_t i = 0; i < count; ++i) {
+    const auto& entry = arr[i];
+    if (!entry.is_object()) {
+      continue;
+    }
+    Preset preset;
+    preset.hasData = entry.value("hasData", false);
+    std::string sourceStr = entry.value("source", "video");
+    if (sourceStr == "midi") preset.source = Source::MidiPattern;
+    preset.lineWidth = entry.value("lineWidth", preset.lineWidth);
+    preset.angleDeg = entry.value("angleDeg", preset.angleDeg);
+    preset.rotationSpeedDegPerSec = entry.value("rotationSpeedDegPerSec", preset.rotationSpeedDegPerSec);
+    preset.verticalSpeedPxPerSec = entry.value("verticalSpeedPxPerSec", preset.verticalSpeedPxPerSec);
+    preset.pauseAutomation = entry.value("pauseAutomation", preset.pauseAutomation);
+    preset.automationPhase = entry.value("automationPhase", preset.automationPhase);
+    if (entry.contains("lineColor") && entry["lineColor"].is_array()) {
+      const auto& col = entry["lineColor"];
+      if (col.size() >= 3) {
+        preset.lineColor = ofFloatColor(
+          col[0].get<float>(),
+          col[1].get<float>(),
+          col[2].get<float>(),
+          col.size() > 3 ? col[3].get<float>() : 1.0f
+        );
+      }
+    }
+    preset.serpentine = entry.value("serpentine", preset.serpentine);
+    preset.verticalFlip = entry.value("verticalFlip", preset.verticalFlip);
+    preset.columnOffset = entry.value("columnOffset", preset.columnOffset);
+    preset.targetSendFps = entry.value("targetSendFps", preset.targetSendFps);
+    preset.brightnessScalar = entry.value("brightnessScalar", preset.brightnessScalar);
+    preset.sendOsc = entry.value("sendOsc", preset.sendOsc);
+    preset.blackout = entry.value("blackout", preset.blackout);
+    presets[i] = preset;
+  }
+}
+
+//--------------------------------------------------------------
+void ofApp::savePresetsToFile() const {
+  if (presetsPath.empty()) {
+    return;
+  }
+  ofJson root;
+  root["presets"] = ofJson::array();
+  for (int i = 0; i < kPresetCount; ++i) {
+    const Preset& preset = presets[i];
+    ofJson entry;
+    entry["hasData"] = preset.hasData;
+    entry["source"] = (preset.source == Source::Video) ? "video" : "midi";
+    entry["lineWidth"] = preset.lineWidth;
+    entry["angleDeg"] = preset.angleDeg;
+    entry["rotationSpeedDegPerSec"] = preset.rotationSpeedDegPerSec;
+    entry["verticalSpeedPxPerSec"] = preset.verticalSpeedPxPerSec;
+    entry["pauseAutomation"] = preset.pauseAutomation;
+    entry["automationPhase"] = preset.automationPhase;
+    entry["lineColor"] = {preset.lineColor.r, preset.lineColor.g, preset.lineColor.b, preset.lineColor.a};
+    entry["serpentine"] = preset.serpentine;
+    entry["verticalFlip"] = preset.verticalFlip;
+    entry["columnOffset"] = preset.columnOffset;
+    entry["targetSendFps"] = preset.targetSendFps;
+    entry["brightnessScalar"] = preset.brightnessScalar;
+    entry["sendOsc"] = preset.sendOsc;
+    entry["blackout"] = preset.blackout;
+    root["presets"].push_back(entry);
+  }
+  ofSavePrettyJson(presetsPath, root);
+}
+
+//--------------------------------------------------------------
+void ofApp::storePreset(int idx) {
+  if (idx < 0 || idx >= kPresetCount) {
+    return;
+  }
+  Preset preset;
+  preset.hasData = true;
+  preset.source = source;
+  preset.lineWidth = lineWidth;
+  preset.angleDeg = angleDeg;
+  preset.rotationSpeedDegPerSec = rotationSpeedDegPerSec;
+  preset.verticalSpeedPxPerSec = verticalSpeedPxPerSec;
+  preset.pauseAutomation = pauseAutomation;
+  preset.automationPhase = automationPhase;
+  preset.lineColor = lineColor;
+  preset.serpentine = serpentine;
+  preset.verticalFlip = verticalFlip;
+  preset.columnOffset = columnOffset;
+  preset.targetSendFps = targetSendFps;
+  preset.brightnessScalar = brightnessScalar;
+  preset.sendOsc = sendOsc;
+  preset.blackout = blackout;
+  presets[idx] = preset;
+  savePresetsToFile();
+}
+
+//--------------------------------------------------------------
+void ofApp::recallPreset(int idx) {
+  if (idx < 0 || idx >= kPresetCount) {
+    return;
+  }
+  const Preset& preset = presets[idx];
+  if (!preset.hasData) {
+    return;
+  }
+  source = preset.source;
+  lineWidth = preset.lineWidth;
+  angleDeg = preset.angleDeg;
+  rotationSpeedDegPerSec = preset.rotationSpeedDegPerSec;
+  verticalSpeedPxPerSec = preset.verticalSpeedPxPerSec;
+  pauseAutomation = preset.pauseAutomation;
+  automationPhase = preset.automationPhase;
+  lineColor = preset.lineColor;
+  serpentine = preset.serpentine;
+  verticalFlip = preset.verticalFlip;
+  columnOffset = preset.columnOffset;
+  targetSendFps = ofClamp(preset.targetSendFps, 1.0f, 120.0f);
+  brightnessScalar = ofClamp(preset.brightnessScalar, 0.0f, 1.0f);
+  sendOsc = preset.sendOsc;
+  blackout = preset.blackout;
+}
+
+//--------------------------------------------------------------
 void ofApp::openMidiPortByIndex(int idx) {
 #if HAS_OFXMIDI
   if (midiPorts.empty()) { midiStatus = "MIDI: No ports"; return; }
@@ -571,20 +716,29 @@ void ofApp::newMidiMessage(ofxMidiMessage &msg) {
       case 6:  { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); s = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
       case 7:  { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); b = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
       // Knobs 16..23 mirror
-      case 16: lineWidth = toRange(0.5f, 12.0f); break;
-      case 17: angleDeg = toRange(0.0f, 90.0f); break;
-      case 18: rotationSpeedDegPerSec = toBipolar() * 360.0f; break;
-      case 19: verticalSpeedPxPerSec = toBipolar() * 20.0f; break;
-      case 20: automationPhase = toRange(0.0f, 1.0f); break;
-      case 21: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); h = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
-      case 22: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); s = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
-      case 23: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); b = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
-      // Solo/Mute/Rec buttons examples
-      case 32: if (v > 0) pauseAutomation = !pauseAutomation; break; // Solo 1
-      case 48: if (v > 0) sendOsc = !sendOsc; break; // Mute 1 toggles OSC send
-      case 49: if (v > 0) { // Mute 2 cycles mode video/midi
+      // case 16: lineWidth = toRange(0.5f, 12.0f); break;
+      // case 17: angleDeg = toRange(0.0f, 90.0f); break;
+      // case 18: rotationSpeedDegPerSec = toBipolar() * 360.0f; break;
+      // case 19: verticalSpeedPxPerSec = toBipolar() * 20.0f; break;
+      // case 20: automationPhase = toRange(0.0f, 1.0f); break;
+      // case 21: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); h = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
+      // case 22: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); s = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
+      // case 23: { ofColor c(lineColor); float h,s,b; c.getHsb(h,s,b); b = ofMap(v,0,127,0,255,true); c.setHsb((unsigned char)h,(unsigned char)s,(unsigned char)b); lineColor = ofFloatColor(c); } break;
+      // Transport controls
+      case 41: if (v > 0) pauseAutomation = true; break;  // PLAY
+      case 42: if (v > 0) pauseAutomation = false; break; // STOP
+      case 45: if (v > 0) blackout = !blackout; break;    // REC
+      case 46: if (v > 0) { // CYCLE toggles source
         source = (source == Source::Video) ? Source::MidiPattern : Source::Video;
       } break;
+      // M buttons 1-8 store presets
+      case 48: case 49: case 50: case 51: case 52: case 53: case 54: case 55:
+        if (v > 0) storePreset(cc - 48);
+        break;
+      // R buttons 1-8 recall presets
+      case 64: case 65: case 66: case 67: case 68: case 69: case 70: case 71:
+        if (v > 0) recallPreset(cc - 64);
+        break;
       default: break;
     }
   }

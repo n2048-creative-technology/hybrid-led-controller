@@ -373,8 +373,8 @@ static void changePalettePeriodically() {
   }
   lastSecond = secondHand;
 
-  secondHand = 10;
-  if (secondHand == 0)  { currentPalette = RainbowColors_p;       currentBlending = LINEARBLEND; }
+  secondHand = 0;
+  if (secondHand == 0)  { currentPalette = OceanColors_p;       currentBlending = LINEARBLEND; }
   if (secondHand == 10) { currentPalette = RainbowStripeColors_p; currentBlending = NOBLEND; }
   if (secondHand == 20) { currentPalette = CloudColors_p;         currentBlending = LINEARBLEND; }
   if (secondHand == 30) { currentPalette = PartyColors_p;         currentBlending = LINEARBLEND; }

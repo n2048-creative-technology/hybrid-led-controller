@@ -3,15 +3,16 @@
 #include "ofMain.h"
 #include "ofxOsc.h"
 #include <atomic>
+#include <array>
 #include <mutex>
 #include <unordered_map>
 #include "LedMapper.h"
-#if __has_include("ofxMidi.h")
+//#if __has_include("ofxMidi.h")
 #include "ofxMidi.h"
 #define HAS_OFXMIDI 1
-#else
-#define HAS_OFXMIDI 0
-#endif
+//#else
+//#define HAS_OFXMIDI 0
+//#endif
 
 class ofApp : public ofBaseApp
 #if HAS_OFXMIDI
@@ -52,6 +53,10 @@ private:
   // MIDI
   void setupMidi();
   void openMidiPortByIndex(int idx);
+  void loadPresetsFromFile();
+  void savePresetsToFile() const;
+  void storePreset(int idx);
+  void recallPreset(int idx);
 
   // OSC sender (from wifiLedController)
   void setupOscSenders();
@@ -105,6 +110,7 @@ private:
   float targetSendFps = 30.0f;
   float brightnessScalar = 0.8f;
   bool sendOsc = true;                 // allow pausing sender via MIDI
+  bool blackout = false;
 
   std::atomic<uint64_t> framesSent{0};
   std::atomic<uint64_t> framesDropped{0};
@@ -126,4 +132,27 @@ private:
   std::vector<std::string> midiPorts;
   std::string midiStatus = "MIDI: Not detected";
   std::string midiPortName;
+
+  struct Preset {
+    bool hasData = false;
+    Source source = Source::Video;
+    float lineWidth = 2.0f;
+    float angleDeg = 0.0f;
+    float rotationSpeedDegPerSec = 30.0f;
+    float verticalSpeedPxPerSec = 2.0f;
+    bool pauseAutomation = false;
+    float automationPhase = 0.0f;
+    ofFloatColor lineColor = ofFloatColor::fromHsb(160.0f/255.0f, 1.0f, 1.0f);
+    bool serpentine = false;
+    bool verticalFlip = false;
+    int columnOffset = 0;
+    float targetSendFps = 30.0f;
+    float brightnessScalar = 0.8f;
+    bool sendOsc = true;
+    bool blackout = false;
+  };
+
+  static constexpr int kPresetCount = 8;
+  std::array<Preset, kPresetCount> presets;
+  std::string presetsPath;
 };
