@@ -6,10 +6,15 @@
 // ---------------------------------------------------------------------------
 // ESP-NOW satellite (receives LED frames)
 // ---------------------------------------------------------------------------
-static constexpr uint16_t kNumColumns = 12;
-static constexpr uint16_t kNumRows = 19;
-static constexpr uint16_t kNumLeds = kNumColumns * kNumRows;
-static constexpr uint16_t kPayloadSize = kNumLeds * 3;
+static constexpr uint16_t kPayloadColumns = 12;
+static constexpr uint16_t kPayloadRows = 19;
+static constexpr uint16_t kPayloadLeds = kPayloadColumns * kPayloadRows;
+static constexpr uint16_t kPayloadSize = kPayloadLeds * 3;
+
+// Physical layout (change to match the actual strip layout).
+static constexpr uint16_t kPhysicalColumns = 12;
+static constexpr uint16_t kPhysicalRows = 19;
+static constexpr uint16_t kPhysicalLeds = kPhysicalColumns * kPhysicalRows;
 
 static constexpr uint16_t kChunkSize = 200;
 static constexpr uint8_t kMaxChunks = (kPayloadSize + kChunkSize - 1) / kChunkSize;
@@ -22,7 +27,7 @@ static constexpr uint8_t kHereMsg[] = {'H','E','R','E'};
 static constexpr uint8_t kDefaultBrightness = 64;
 static constexpr uint16_t kPowerLimitMa = 3000;
 
-CRGB leds[kNumLeds];
+CRGB leds[kPhysicalLeds];
 
 static uint8_t frameBuffer[kPayloadSize];
 static bool chunkReceived[kMaxChunks];
@@ -36,27 +41,25 @@ static uint32_t lastFrameMs = 0;
 
 static uint8_t broadcastMac[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 
-static inline uint16_t mapLedIndex(uint16_t logicalIndex) {
-  uint16_t col = logicalIndex / kNumRows;
-  uint16_t row = logicalIndex % kNumRows;
+static inline uint16_t mapLedIndex(uint16_t logicalIndex, uint16_t rows) {
+  uint16_t col = logicalIndex / rows;
+  uint16_t row = logicalIndex % rows;
   uint16_t physicalRow = row;
   if (col % 2 == 1) {
-    physicalRow = (kNumRows - 1) - row;
+    physicalRow = (rows - 1) - row;
   }
-  return col * kNumRows + physicalRow;
+  return col * rows + physicalRow;
 }
 
-static void applyFrame(uint16_t ledCount) {
-  for (uint16_t i = 0; i < kNumLeds; ++i) {
-    leds[i] = CRGB::Black;
-  }
-  uint16_t idx = 0;
-  for (uint16_t i = 0; i < ledCount; ++i) {
-    uint8_t r = frameBuffer[idx++];
-    uint8_t g = frameBuffer[idx++];
-    uint8_t b = frameBuffer[idx++];
-    uint16_t physical = mapLedIndex(i);
-    if (physical < kNumLeds) {
+static void applyFrame() {
+  for (uint16_t i = 0; i < kPhysicalLeds; ++i) {
+    const uint16_t logical = i % kPayloadLeds;
+    const uint16_t idx = static_cast<uint16_t>(logical * 3);
+    uint8_t r = frameBuffer[idx];
+    uint8_t g = frameBuffer[idx + 1];
+    uint8_t b = frameBuffer[idx + 2];
+    uint16_t physical = mapLedIndex(i, kPhysicalRows);
+    if (physical < kPhysicalLeds) {
       leds[physical].setRGB(r, g, b);
     }
   }
@@ -109,7 +112,7 @@ static void handleDataPacket(const uint8_t *data, int len) {
   memcpy(frameBuffer + offset, data + 5, chunkLen);
 
   if (chunksReceived >= expectedChunks) {
-    applyFrame(kNumLeds);
+    applyFrame();
     framesApplied++;
   }
 }
@@ -146,18 +149,18 @@ void setup() {
   broadcastPeer.encrypt = false;
   esp_now_add_peer(&broadcastPeer);
 
-  FastLED.addLeds<LED_TYPE, D2, COLOR_ORDER>(leds, kNumLeds).setCorrection(TypicalLEDStrip);
-  FastLED.addLeds<LED_TYPE, D3, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D4, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D5, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D6, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D7, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D8, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D9, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D10, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D11, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D12, COLOR_ORDER>(leds, kNumLeds);
-  FastLED.addLeds<LED_TYPE, D13, COLOR_ORDER>(leds, kNumLeds);
+  FastLED.addLeds<LED_TYPE, D2, COLOR_ORDER>(leds, kPhysicalLeds).setCorrection(TypicalLEDStrip);
+  FastLED.addLeds<LED_TYPE, D3, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D4, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D5, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D6, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D7, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D8, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D9, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D10, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D11, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D12, COLOR_ORDER>(leds, kPhysicalLeds);
+  FastLED.addLeds<LED_TYPE, D13, COLOR_ORDER>(leds, kPhysicalLeds);
   FastLED.setBrightness(kDefaultBrightness);
   FastLED.setMaxPowerInVoltsAndMilliamps(5, kPowerLimitMa);
   FastLED.clear(true);
