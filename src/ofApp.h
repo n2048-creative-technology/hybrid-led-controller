@@ -1,11 +1,8 @@
 #pragma once
 
 #include "ofMain.h"
-#include "ofxOsc.h"
 #include <atomic>
 #include <array>
-#include <mutex>
-#include <unordered_map>
 #include "LedMapper.h"
 //#if __has_include("ofxMidi.h")
 #include "ofxMidi.h"
@@ -58,11 +55,10 @@ private:
   void storePreset(int idx);
   void recallPreset(int idx);
 
-  // OSC sender (from wifiLedController)
-  void setupOscSenders();
-  void sendOscFrame();
-  void handleOscAcks();
   void sendFrameIfDue();
+  bool setupSerial();
+  void sendSerialFrame();
+  void encodeRlePayload();
 
   static constexpr int kCols = 12;
   static constexpr int kRows = 19;
@@ -95,17 +91,6 @@ private:
   bool verticalFlip = false;
   int columnOffset = 0;
 
-  // OSC
-  std::vector<std::string> oscHosts;
-  std::vector<ofxOscSender> oscSenders;
-  ofxOscReceiver ackReceiver;
-  int oscPort = 9000;
-  int ackPort = 9001;
-  std::string oscAddress = "/leds";
-  bool oscReady = false;
-  std::unordered_map<std::string, uint32_t> lastSeenByHost;
-  uint32_t activeDeviceTtlMs = 3000;
-
   // Sender timing
   float targetSendFps = 30.0f;
   float brightnessScalar = 0.8f;
@@ -117,7 +102,8 @@ private:
   uint32_t lastSendMillis = 0;
 
   std::vector<uint8_t> payload;
-  std::mutex oscMutex;
+  std::vector<uint8_t> serialFrame;
+  std::vector<uint8_t> rlePayload;
 
   // UI interactions
   ofRectangle brightnessSliderRect;
@@ -132,6 +118,18 @@ private:
   std::vector<std::string> midiPorts;
   std::string midiStatus = "MIDI: Not detected";
   std::string midiPortName;
+
+  // Serial (ESP32 host bridge)
+  ofSerial serial;
+  bool serialReady = false;
+  std::string serialStatus = "Serial: Not connected";
+  std::string serialDevice;
+  int serialBaud = 115200;
+  int targetId = 0; // 0 = broadcast, 1-9 = satellites
+  uint32_t lastSerialReconnectMs = 0;
+  uint32_t serialReconnectDelayMs = 1000;
+  uint32_t lastSerialAttemptMs = 0;
+  float maxSerialFps = 0.0f;
 
   struct Preset {
     bool hasData = false;

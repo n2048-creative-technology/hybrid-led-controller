@@ -1,0 +1,1 @@
+/dev/serial/by-id/usb-Arduino_NanoESP32_744DBDA0A0C8-if01,115200

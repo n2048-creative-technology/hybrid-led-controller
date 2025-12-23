@@ -2,10 +2,10 @@
 
 A combined openFrameworks application that blends the strengths of two existing apps without modifying them:
 
-- Video ingest + OSC streaming (payload compatible with `wifiLedController`).
+- Video ingest + serial streaming to an ESP‑NOW host bridge.
 - MIDI‑driven LED pattern control (KORG nanoKONTROL2) inspired by `cylinder-led-controller`.
 
-It lets you switch live between a MIDI‑controlled expression and a video‑driven expression, while streaming LED frames over WiFi/OSC to ESP32 receivers.
+It lets you switch live between a MIDI‑controlled expression and a video‑driven expression, while streaming LED frames over serial to an ESP‑NOW host ESP32 that relays to satellites.
 
 
 ## Features
@@ -13,8 +13,8 @@ It lets you switch live between a MIDI‑controlled expression and a video‑dri
 - Two sources:
   - Video: play a video and downsample to a 12×19 grid.
   - MIDI Pattern: animated line pattern with full controls via KORG nanoKONTROL2.
-- OSC sender:
-  - Multi‑host OSC streaming with broadcast support and ACK tracking.
+- Serial sender:
+  - Streams LED frames over serial to a host ESP32, which relays via ESP‑NOW to satellites.
 - Mapping options: column rotation, serpentine wiring, vertical flip, brightness control.
 - Simple, dependency‑light UI overlays with keyboard shortcuts.
 
@@ -22,8 +22,8 @@ It lets you switch live between a MIDI‑controlled expression and a video‑dri
 ## Requirements
 
 - openFrameworks (0.11.x or later recommended).
-- Addons: `ofxMidi`, `ofxOsc` installed in `OF_ROOT/addons/`.
-- ESP32 receivers listening for OSC frames (as in `wifiLedController`).
+- Addons: `ofxMidi` installed in `OF_ROOT/addons/`.
+- One ESP32 connected via USB (host bridge) + ESP‑NOW satellite ESP32 receivers.
 
 
 ## Build
@@ -41,7 +41,16 @@ The executable is created at `bin/hybrid-led-controller`.
 
 - Optional: place a `video.mp4` in `bin/data/` – the app will try to load it on startup.
 - Start the app. If a KORG nanoKONTROL2 (or other MIDI device) is connected, the app auto‑opens the first matching MIDI input.
-- Edit `bin/data/osc_devices.txt` to set ESP32 IPs or leave it as `broadcast`.
+- Optional: create `bin/data/serial_device.txt` with a device path/name (or `auto`).
+  - You can also append a baud rate, e.g. `/dev/serial/by-id/... , 115200`.
+  - Recommended on Linux: use `/dev/serial/by-id/...` for stable device naming.
+
+## ESP-NOW Firmware
+
+- Host bridge (USB‑connected): `arduino_nano_esp32` env `nano_esp32_host` (115200 baud)
+- Satellites: `arduino_nano_esp32` env `nano_esp32_satellite`
+- The host prints the discovered ID ↔ MAC map in its serial monitor.
+- Satellites duplicate LED output on D2–D13.
 
 
 ## Modes (sources)
@@ -74,7 +83,7 @@ Typical CC layout in CC mode is assumed. The app scans all input ports and prefe
 - Knobs 16..23: Mirror the sliders above (same parameters).
 - Buttons
   - Solo 1 (CC 32): Toggle Pause Automation
-  - Mute 1 (CC 48): Toggle OSC Send on/off (quick safety mute)
+  - Mute 1 (CC 48): Toggle Send on/off (quick safety mute)
   - Mute 2 (CC 49): Toggle Mode Video ↔ MIDI Pattern
 
 Notes
@@ -88,10 +97,12 @@ Notes
   - `F`: fullscreen
   - `+/-`: global brightness
   - Up/Down: target send FPS (1–120)
-  - `1/2`: mapping mode linear/serpentine
+  - `,/ .`: mapping mode linear/serpentine
   - `V`: vertical flip
   - `[` `]`: rotate columns
   - `R`: reset column offset
+  - `0`: broadcast to all satellites
+  - `1-9`: target a single satellite
 - Video
   - `L`: load video file (dialog)
   - Space: play/pause
@@ -104,11 +115,12 @@ Notes
   - `Q`: pause automation
 
 
-## OSC Payload
+## Serial Payload
 
-- Address: `/leds`
-- Payload: one blob containing RGB triplets for the 12×19 LED grid (684 bytes).
-- Host list: `bin/data/osc_devices.txt` (one IP/hostname per line, or `broadcast`).
+- Frame: `0xAA 0x55` header, `targetId` (0=broadcast, 1..9), `flags`, `len` (LE), payload, checksum (LE).
+- Payload: RGB triplets for the 12×19 LED grid (684 bytes) or RLE‑compressed.
+- Flags: bit0 = RLE (host expands to raw before ESP‑NOW).
+- The host ESP32 discovers satellites and maps IDs by MAC address (alphabetical order).
 
 
 ## LED Mapping Options
@@ -125,11 +137,11 @@ Notes
   - Ensure `ofxMidi` is installed and built.
   - Confirm the device is in CC mode (not DAW).
   - Use a MIDI monitor to verify CC messages are being sent.
-- No OSC connection
-  - Check `bin/data/osc_devices.txt` points at reachable ESP32 IPs (or use `broadcast`).
-  - Verify the ESP32 receiver is listening on port 9000 and sending ACKs to port 9001.
+- No serial connection
+  - Check the host ESP32 USB port; set `bin/data/serial_device.txt` if needed.
+  - Confirm the host is running the ESP‑NOW bridge firmware.
 - Low FPS / dropped frames
-  - Lower the target send FPS or check WiFi stability and receiver throughput.
+  - Lower the target send FPS or check ESP‑NOW range and receiver throughput.
 
 
 ## License

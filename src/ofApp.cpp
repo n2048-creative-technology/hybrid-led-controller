@@ -1,5 +1,6 @@
 #include "ofApp.h"
 #include <algorithm>
+#include <filesystem>
 
 namespace {
 glm::vec2 estimateBitmapStringSize(const std::string& text, float charW, float charH, float lineH) {
@@ -20,6 +21,17 @@ glm::vec2 estimateBitmapStringSize(const std::string& text, float charW, float c
 }
 
 constexpr const char* kPresetFilename = "midi_presets.json";
+constexpr uint8_t kSerialHeaderA = 0xAA;
+constexpr uint8_t kSerialHeaderB = 0x55;
+
+uint16_t computeSerialChecksum(uint8_t targetId, uint8_t flags, uint16_t payloadLen,
+                               const std::vector<uint8_t>& payload) {
+  uint32_t sum = targetId + flags + (payloadLen & 0xFF) + (payloadLen >> 8);
+  for (size_t i = 0; i < payload.size(); ++i) {
+    sum += payload[i];
+  }
+  return static_cast<uint16_t>(sum & 0xFFFF);
+}
 }
 
 //--------------------------------------------------------------
@@ -33,8 +45,7 @@ void ofApp::setup() {
   downsamplePixels.allocate(kCols, kRows, OF_PIXELS_RGB);
 
   payload.assign(kPayloadSize, 0);
-  setupOscSenders();
-  ackReceiver.setup(ackPort);
+  setupSerial();
 
   // Optional default video (put in bin/data as video.mp4)
   loadVideo("video.mp4");
@@ -68,7 +79,18 @@ void ofApp::update() {
   }
 
   updateDownsample();
-  handleOscAcks();
+  if (!serialReady) {
+    uint32_t now = ofGetElapsedTimeMillis();
+    if (now - lastSerialAttemptMs >= serialReconnectDelayMs) {
+      lastSerialAttemptMs = now;
+      const bool ok = setupSerial();
+      if (ok) {
+        serialReconnectDelayMs = 1000;
+      } else {
+        serialReconnectDelayMs = std::min<uint32_t>(serialReconnectDelayMs * 2, 10000);
+      }
+    }
+  }
   sendFrameIfDue();
 }
 
@@ -82,70 +104,6 @@ void ofApp::draw() {
 void ofApp::exit() {
   if (videoLoaded) {
     video.stop();
-  }
-}
-
-//--------------------------------------------------------------
-void ofApp::setupOscSenders() {
-  oscHosts.clear();
-  oscSenders.clear();
-
-  const std::string configPath = ofToDataPath("osc_devices.txt", true);
-  if (ofFile::doesFileExist(configPath)) {
-    ofBuffer buffer = ofBufferFromFile(configPath);
-    for (const auto& line : buffer.getLines()) {
-      std::string host = ofTrim(line);
-      if (!host.empty() && host[0] != '#') {
-        oscHosts.push_back(host);
-      }
-    }
-  }
-
-  if (oscHosts.empty()) {
-    oscHosts.push_back("broadcast");
-  }
-
-  for (const auto& host : oscHosts) {
-    ofxOscSenderSettings settings;
-    const bool looksLikeBroadcast = host == "broadcast" || host == "255.255.255.255" ||
-                                    ofIsStringInString(host, ".255");
-    settings.host = (host == "broadcast") ? "255.255.255.255" : host;
-    settings.broadcast = looksLikeBroadcast;
-    settings.port = oscPort;
-    ofxOscSender sender;
-    if (sender.setup(settings)) {
-      oscSenders.push_back(std::move(sender));
-    } else {
-      ofLogWarning() << "OSC sender setup failed for host: " << settings.host
-                     << " port: " << settings.port;
-    }
-  }
-
-  oscReady = !oscSenders.empty();
-}
-
-//--------------------------------------------------------------
-void ofApp::handleOscAcks() {
-  const uint32_t now = ofGetElapsedTimeMillis();
-  while (ackReceiver.hasWaitingMessages()) {
-    ofxOscMessage msg;
-    ackReceiver.getNextMessage(msg);
-    if (msg.getAddress() != "/leds_ack") {
-      continue;
-    }
-    std::string host = msg.getRemoteHost();
-    if (host.empty()) {
-      host = "unknown";
-    }
-    lastSeenByHost[host] = now;
-  }
-
-  for (auto it = lastSeenByHost.begin(); it != lastSeenByHost.end();) {
-    if (now - it->second > activeDeviceTtlMs) {
-      it = lastSeenByHost.erase(it);
-    } else {
-      ++it;
-    }
   }
 }
 
@@ -255,7 +213,10 @@ void ofApp::sendFrameIfDue() {
   if (!sendOsc) {
     return;
   }
-  const float effectiveFps = std::max(1.0f, targetSendFps);
+  const float bytesPerFrame = static_cast<float>(payload.size() + 7);
+  const float bytesPerSec = static_cast<float>(serialBaud) / 10.0f;
+  maxSerialFps = std::max(1.0f, bytesPerSec / bytesPerFrame);
+  const float effectiveFps = std::max(1.0f, std::min(targetSendFps, maxSerialFps));
   uint32_t intervalMs = static_cast<uint32_t>(1000.0f / effectiveFps);
   uint32_t now = ofGetElapsedTimeMillis();
   if (now - lastSendMillis < intervalMs) {
@@ -263,28 +224,217 @@ void ofApp::sendFrameIfDue() {
   }
   lastSendMillis = now;
 
-  if (!oscReady) {
-    framesDropped.fetch_add(1);
-    return;
-  }
   buildPayload();
-  sendOscFrame();
+  sendSerialFrame();
 }
 
 //--------------------------------------------------------------
-void ofApp::sendOscFrame() {
-  ofxOscMessage message;
-  message.setAddress(oscAddress);
-  ofBuffer blob(reinterpret_cast<const char*>(payload.data()), payload.size());
-  message.addBlobArg(blob);
+bool ofApp::setupSerial() {
+  serialReady = false;
+  serialStatus = "Serial: Not connected";
+  serialDevice.clear();
+  if (serial.isInitialized()) {
+    serial.close();
+  }
 
-  std::lock_guard<std::mutex> lock(oscMutex);
-  for (auto& sender : oscSenders) {
-    if (sender.isReady()) {
-      sender.sendMessage(message, false);
+  std::string desired;
+  const std::string configPath = ofToDataPath("serial_device.txt", true);
+  if (ofFile::doesFileExist(configPath)) {
+    ofBuffer buffer = ofBufferFromFile(configPath);
+    for (const auto& line : buffer.getLines()) {
+      std::string entry = ofTrim(line);
+      if (!entry.empty() && entry[0] != '#') {
+        size_t comma = entry.find(',');
+        if (comma != std::string::npos) {
+          desired = ofTrim(entry.substr(0, comma));
+          std::string baudStr = ofTrim(entry.substr(comma + 1));
+          if (!baudStr.empty()) {
+            serialBaud = std::max(9600, ofToInt(baudStr));
+          }
+        } else {
+          desired = entry;
+        }
+        break;
+      }
     }
   }
-  framesSent.fetch_add(1);
+
+  const bool requireExact = !desired.empty() && desired != "auto";
+  std::string autoDevice;
+  if (!requireExact) {
+    const std::string byIdPath = "/dev/serial/by-id";
+    try {
+      if (std::filesystem::exists(byIdPath)) {
+        for (const auto& entry : std::filesystem::directory_iterator(byIdPath)) {
+          if (!entry.is_symlink()) {
+            continue;
+          }
+          const std::string name = entry.path().filename().string();
+          if (name.find("Arduino") == std::string::npos &&
+              name.find("Nano") == std::string::npos &&
+              name.find("ESP32") == std::string::npos) {
+            continue;
+          }
+          autoDevice = entry.path().string();
+          break;
+        }
+        if (autoDevice.empty()) {
+          for (const auto& entry : std::filesystem::directory_iterator(byIdPath)) {
+            if (entry.is_symlink()) {
+              autoDevice = entry.path().string();
+              break;
+            }
+          }
+        }
+      }
+    } catch (const std::exception& e) {
+      ofLogWarning() << "Serial auto-detect failed: " << e.what();
+    }
+  }
+
+  if (requireExact) {
+    if (serial.setup(desired, serialBaud)) {
+      serialReady = true;
+      serialDevice = desired;
+      serialStatus = std::string("Serial: ") + serialDevice;
+      return true;
+    } else {
+      serialReady = false;
+      serialStatus = std::string("Serial: Failed to open ") + desired;
+    }
+    return false;
+  }
+
+  int selected = -1;
+  if (!autoDevice.empty()) {
+    desired = autoDevice;
+  }
+
+  auto devices = serial.getDeviceList();
+  if (devices.empty()) {
+    serialStatus = "Serial: No devices";
+    return false;
+  }
+
+  if (!desired.empty() && desired != "auto") {
+    for (size_t i = 0; i < devices.size(); ++i) {
+      auto dev = devices[i];
+      if (dev.getDevicePath() == desired || dev.getDeviceName() == desired) {
+        selected = static_cast<int>(i);
+        break;
+      }
+    }
+  }
+  if (selected < 0) {
+    int preferred = -1;
+    int fallback = -1;
+    for (size_t i = 0; i < devices.size(); ++i) {
+      auto dev = devices[i];
+      const std::string path = dev.getDevicePath();
+      if (ofIsStringInString(path, "/dev/ttyS")) {
+        continue;
+      }
+      if (fallback < 0) {
+        fallback = static_cast<int>(i);
+      }
+      if (ofIsStringInString(path, "/dev/ttyACM") || ofIsStringInString(path, "/dev/ttyUSB")) {
+        preferred = static_cast<int>(i);
+        break;
+      }
+    }
+    selected = (preferred >= 0) ? preferred : std::max(0, fallback);
+  }
+
+  const std::string devicePath = devices[selected].getDevicePath();
+  if (serial.setup(devicePath, serialBaud)) {
+    serialReady = true;
+    serialDevice = devicePath;
+    if (!autoDevice.empty()) {
+      serialStatus = std::string("Serial: auto -> ") + serialDevice;
+    } else {
+      serialStatus = std::string("Serial: ") + serialDevice;
+    }
+    return true;
+  } else {
+    serialReady = false;
+    serialStatus = std::string("Serial: Failed to open ") + devicePath;
+  }
+  return false;
+}
+
+//--------------------------------------------------------------
+void ofApp::sendSerialFrame() {
+  if (!serialReady) {
+    return;
+  }
+  encodeRlePayload();
+  const bool useRle = !rlePayload.empty() && rlePayload.size() < payload.size();
+  const std::vector<uint8_t>& framePayload = useRle ? rlePayload : payload;
+  const uint8_t flags = useRle ? 0x01 : 0x00;
+  const uint16_t payloadLen = static_cast<uint16_t>(framePayload.size());
+  const uint16_t checksum = computeSerialChecksum(static_cast<uint8_t>(targetId), flags, payloadLen, framePayload);
+  const size_t frameSize = 2 + 1 + 1 + 2 + payloadLen + 2;
+  if (serialFrame.size() != frameSize) {
+    serialFrame.resize(frameSize);
+  }
+  size_t offset = 0;
+  serialFrame[offset++] = kSerialHeaderA;
+  serialFrame[offset++] = kSerialHeaderB;
+  serialFrame[offset++] = static_cast<uint8_t>(targetId);
+  serialFrame[offset++] = flags;
+  serialFrame[offset++] = static_cast<uint8_t>(payloadLen & 0xFF);
+  serialFrame[offset++] = static_cast<uint8_t>((payloadLen >> 8) & 0xFF);
+  if (!framePayload.empty()) {
+    memcpy(serialFrame.data() + offset, framePayload.data(), payloadLen);
+    offset += payloadLen;
+  }
+  serialFrame[offset++] = static_cast<uint8_t>(checksum & 0xFF);
+  serialFrame[offset++] = static_cast<uint8_t>((checksum >> 8) & 0xFF);
+
+  const int written = serial.writeBytes(serialFrame.data(), static_cast<int>(serialFrame.size()));
+  if (written == static_cast<int>(serialFrame.size())) {
+    framesSent.fetch_add(1);
+  } else {
+    framesDropped.fetch_add(1);
+    if (written < 0) {
+      serialReady = false;
+      serialStatus = "Serial: Disconnected";
+      if (serial.isInitialized()) {
+        serial.close();
+      }
+      lastSerialAttemptMs = ofGetElapsedTimeMillis();
+    }
+  }
+}
+
+//--------------------------------------------------------------
+void ofApp::encodeRlePayload() {
+  rlePayload.clear();
+  if (payload.empty()) {
+    return;
+  }
+  const size_t pixelCount = payload.size() / 3;
+  rlePayload.reserve(pixelCount * 4);
+  size_t i = 0;
+  while (i < pixelCount) {
+    const size_t base = i * 3;
+    uint8_t r = payload[base];
+    uint8_t g = payload[base + 1];
+    uint8_t b = payload[base + 2];
+    uint8_t run = 1;
+    while (i + run < pixelCount && run < 255) {
+      const size_t nextBase = (i + run) * 3;
+      if (payload[nextBase] != r || payload[nextBase + 1] != g || payload[nextBase + 2] != b) {
+        break;
+      }
+      run++;
+    }
+    rlePayload.push_back(run);
+    rlePayload.push_back(r);
+    rlePayload.push_back(g);
+    rlePayload.push_back(b);
+    i += run;
+  }
 }
 
 //--------------------------------------------------------------
@@ -346,36 +496,28 @@ void ofApp::drawUiText(float x, float y) {
   const float lineH = 14.0f;
   const float sliderH = 10.0f;
   const float sliderGap = 8.0f;
-  const bool connected = oscReady;
-  const std::string statusText = connected ? "OSC READY" : "NO OSC HOSTS";
+  const bool connected = serialReady;
+  const std::string statusText = connected ? "SERIAL READY" : "SERIAL NOT READY";
   const ofColor statusColor = connected ? ofColor(0, 200, 90) : ofColor(220, 60, 60);
 
   std::stringstream ss;
   ss << "Mode: ";
   ss << (source == Source::Video ? "Video" : "MIDI Pattern") << "\n";
-  ss << "OSC: " << oscAddress << " @ " << oscPort << "  Ack: " << ackPort << "\n";
-  ss << "Configured: " << oscHosts.size() << "  Ready: " << oscSenders.size()
-     << "  Active: " << lastSeenByHost.size() << "\n";
-  if (!oscHosts.empty()) {
-    ss << "Hosts: ";
-    for (size_t i = 0; i < oscHosts.size(); ++i) {
-      if (i > 0) ss << ", ";
-      ss << oscHosts[i];
-    }
-    ss << "\n";
-  }
-  ss << "Send FPS: " << targetSendFps << "  Frames sent: " << framesSent.load()
+  ss << serialStatus << "\n";
+  ss << "Send FPS: " << targetSendFps << " (max " << maxSerialFps << ")  Frames sent: " << framesSent.load()
      << " dropped: " << framesDropped.load() << "\n";
   ss << "Brightness: " << brightnessScalar << "  Mapping: " << (serpentine ? "serpentine" : "linear") << "\n";
   ss << "Vertical flip: " << (verticalFlip ? "on" : "off") << "  Column offset: " << columnOffset << "\n";
-  ss << "Send OSC: " << (sendOsc ? "on" : "off") << "  Blackout: " << (blackout ? "on" : "off") << "\n";
+  ss << "Send: " << (sendOsc ? "on" : "off") << "  Blackout: " << (blackout ? "on" : "off") << "\n";
+  ss << "Target ID: " << targetId << "  (0=broadcast)\n";
   ss << midiStatus << "\n";
   ss << "Controls:\n";
   ss << "  Space play/pause (video)  |  L load file  |  F fullscreen\n";
-  ss << "  M switch mode (video/midi)  |  1/2 mapping linear/serpentine  |  V vertical flip  |  [ ] rotate  |  R reset\n";
+  ss << "  M switch mode (video/midi)  |  ,/. mapping linear/serpentine  |  V vertical flip  |  [ ] rotate  |  R reset\n";
   ss << "  Up/Down send fps  |  +/- brightness\n";
+  ss << "  Target: 0=broadcast, 1-9=single device\n";
   ss << "  Line: A/Z angle  |  W/S width  |  O/P rot speed  |  K/I vertical speed  |  Q pause anim\n";
-  ss << "  Edit bin/data/osc_devices.txt to set ESP32 IPs\n";
+  ss << "  Edit bin/data/serial_device.txt to set serial port (or auto)\n";
   ss << "  Drag-and-drop a video file onto window\n";
   const glm::vec2 textSize = estimateBitmapStringSize(ss.str(), charW, charH, lineH);
 
@@ -447,8 +589,14 @@ void ofApp::keyPressed(int key) {
     case 'm': case 'M':
       if (source == Source::Video) source = Source::MidiPattern; else source = Source::Video;
       break;
-    case '1': serpentine = false; break;
-    case '2': serpentine = true; break;
+    case ',':
+    case '<':
+      serpentine = false;
+      break;
+    case '.':
+    case '>':
+      serpentine = true;
+      break;
     case 'v': case 'V': verticalFlip = !verticalFlip; break;
     case '[': columnOffset--; break;
     case ']': columnOffset++; break;
@@ -468,6 +616,16 @@ void ofApp::keyPressed(int key) {
     case 'k': case 'K': verticalSpeedPxPerSec = ofClamp(verticalSpeedPxPerSec + 0.5f, -20.0f, 20.0f); break;
     case 'i': case 'I': verticalSpeedPxPerSec = ofClamp(verticalSpeedPxPerSec - 0.5f, -20.0f, 20.0f); break;
     case 'q': case 'Q': pauseAutomation = !pauseAutomation; break;
+    case '0': targetId = 0; break;
+    case '1': targetId = 1; break;
+    case '2': targetId = 2; break;
+    case '3': targetId = 3; break;
+    case '4': targetId = 4; break;
+    case '5': targetId = 5; break;
+    case '6': targetId = 6; break;
+    case '7': targetId = 7; break;
+    case '8': targetId = 8; break;
+    case '9': targetId = 9; break;
     default:
       break;
   }

@@ -321,24 +321,8 @@ obj/linux64/Release/src/ofApp.o: src/ofApp.cpp src/ofApp.h \
  ../../../libs/openFrameworks/video/ofVideoPlayer.h \
  ../../../libs/openFrameworks/3d/of3dUtils.h \
  ../../../libs/openFrameworks/3d/ofCamera.h \
- ../../../libs/openFrameworks/3d/ofEasyCam.h \
- ../../../addons/ofxOsc/src/ofxOsc.h \
- ../../../addons/ofxOsc/src/ofxOscArg.h \
- ../../../addons/ofxOsc/src/ofxOscMessage.h \
- ../../../addons/ofxOsc/src/ofxOscSender.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/OscOutboundPacketStream.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/OscTypes.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/OscException.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/OscTypes.h \
- ../../../addons/ofxOsc/libs/oscpack/src/ip/UdpSocket.h \
- ../../../addons/ofxOsc/libs/oscpack/src/ip/NetworkingUtils.h \
- ../../../addons/ofxOsc/libs/oscpack/src/ip/IpEndpointName.h \
- ../../../addons/ofxOsc/src/ofxOscBundle.h \
- ../../../addons/ofxOsc/src/ofxOscReceiver.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/OscPacketListener.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/OscReceivedElements.h \
- ../../../addons/ofxOsc/libs/oscpack/src/osc/../ip/PacketListener.h \
- src/LedMapper.h ../../../addons/ofxMidi/src/ofxMidi.h \
+ ../../../libs/openFrameworks/3d/ofEasyCam.h src/LedMapper.h \
+ ../../../addons/ofxMidi/src/ofxMidi.h \
  ../../../addons/ofxMidi/src/ofxMidiIn.h \
  ../../../addons/ofxMidi/src/ofxBaseMidi.h \
  ../../../addons/ofxMidi/src/ofxMidiConstants.h \
@@ -674,22 +658,6 @@ src/ofApp.h:
 ../../../libs/openFrameworks/3d/of3dUtils.h:
 ../../../libs/openFrameworks/3d/ofCamera.h:
 ../../../libs/openFrameworks/3d/ofEasyCam.h:
-../../../addons/ofxOsc/src/ofxOsc.h:
-../../../addons/ofxOsc/src/ofxOscArg.h:
-../../../addons/ofxOsc/src/ofxOscMessage.h:
-../../../addons/ofxOsc/src/ofxOscSender.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/OscOutboundPacketStream.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/OscTypes.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/OscException.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/OscTypes.h:
-../../../addons/ofxOsc/libs/oscpack/src/ip/UdpSocket.h:
-../../../addons/ofxOsc/libs/oscpack/src/ip/NetworkingUtils.h:
-../../../addons/ofxOsc/libs/oscpack/src/ip/IpEndpointName.h:
-../../../addons/ofxOsc/src/ofxOscBundle.h:
-../../../addons/ofxOsc/src/ofxOscReceiver.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/OscPacketListener.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/OscReceivedElements.h:
-../../../addons/ofxOsc/libs/oscpack/src/osc/../ip/PacketListener.h:
 src/LedMapper.h:
 ../../../addons/ofxMidi/src/ofxMidi.h:
 ../../../addons/ofxMidi/src/ofxMidiIn.h:
