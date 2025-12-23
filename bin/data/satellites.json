@@ -1,0 +1,12 @@
+{
+  "satellites": [
+    {"id": 1, "name": "LEFT", "active": true},
+    {"id": 2, "name": "S1", "active": true},
+    {"id": 3, "name": "RIGHT", "active": true},
+    {"id": 4, "name": "S2", "active": true},
+    {"id": 5, "name": "S3", "active": true},
+    {"id": 6, "name": "-", "active": false},
+    {"id": 7, "name": "-", "active": false},
+    {"id": 8, "name": "-", "active": false}
+  ]
+}

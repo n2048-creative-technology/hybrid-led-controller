@@ -44,6 +44,7 @@ The executable is created at `bin/hybrid-led-controller`.
 - Optional: create `bin/data/serial_device.txt` with a device path/name (or `auto`).
   - You can also append a baud rate, e.g. `/dev/serial/by-id/... , 115200`.
   - Recommended on Linux: use `/dev/serial/by-id/...` for stable device naming.
+- Optional: edit `bin/data/satellites.json` to rename satellites, remap IDs, and set initial active states.
 
 ## ESP-NOW Firmware
 
@@ -82,9 +83,17 @@ Typical CC layout in CC mode is assumed. The app scans all input ports and prefe
   - CC 7: Color Brightness (0–255)
 - Knobs 16..23: Mirror the sliders above (same parameters).
 - Buttons
-  - Solo 1 (CC 32): Toggle Pause Automation
-  - Mute 1 (CC 48): Toggle Send on/off (quick safety mute)
-  - Mute 2 (CC 49): Toggle Mode Video ↔ MIDI Pattern
+  - S 1–8 (CC 32–39): Toggle satellite active state (LED feedback mirrors UI)
+  - Mute 1 (CC 48): Store preset 1
+  - Mute 2 (CC 49): Store preset 2
+  - Mute 3–8 (CC 50–55): Store presets 3–8
+  - Rec 1 (CC 64): Recall preset 1
+  - Rec 2 (CC 65): Recall preset 2
+  - Rec 3–8 (CC 66–71): Recall presets 3–8
+  - Cycle (CC 46): Toggle Mode Video ↔ MIDI Pattern
+  - Play (CC 41): Pause automation
+  - Stop (CC 42): Resume automation
+  - Rec (CC 45): Toggle blackout
 
 Notes
 - The device should be in CC mode (not DAW mode). If values don’t change, check the device mode or use KORG’s configuration utility.
@@ -101,8 +110,8 @@ Notes
   - `V`: vertical flip
   - `[` `]`: rotate columns
   - `R`: reset column offset
-  - `0`: broadcast to all satellites
-  - `1-9`: target a single satellite
+- `0`: toggle all satellites active
+- `1-8`: toggle satellites 1–8 active
 - Video
   - `L`: load video file (dialog)
   - Space: play/pause

@@ -44,23 +44,17 @@ private:
   void drawPreviews();
   void drawGridPreview(float x, float y, float scale);
   void drawUiText(float x, float y);
+  void drawSatelliteUi(float x, float y);
   void loadVideo(const std::string& path);
   void loadVideoDialog();
   
   // MIDI
   void setupMidi();
   void openMidiPortByIndex(int idx);
-  void loadPresetsFromFile();
-  void savePresetsToFile() const;
-  void storePreset(int idx);
-  void recallPreset(int idx);
-
-  void sendFrameIfDue();
-  bool setupSerial();
-  void sendSerialFrame();
-  void sendSerialKeepalive();
-  void encodeRlePayload();
-
+  void toggleSatelliteActive(int idx);
+  void setSatelliteActive(int idx, bool active);
+  void syncMidiLedState();
+  void setupMidiOut();
   static constexpr int kCols = 12;
   static constexpr int kRows = 19;
   static constexpr int kNumLeds = kCols * kRows;
@@ -105,7 +99,6 @@ private:
 
   std::atomic<uint64_t> framesSent{0};
   std::atomic<uint64_t> framesDropped{0};
-  uint32_t lastSendMillis = 0;
 
   std::vector<uint8_t> payload;
   std::vector<uint8_t> serialFrame;
@@ -122,8 +115,13 @@ private:
   ofxMidiIn midiIn;
 #endif
   std::vector<std::string> midiPorts;
+  std::vector<std::string> midiOutPorts;
   std::string midiStatus = "MIDI: Not detected";
   std::string midiPortName;
+#if HAS_OFXMIDI
+  ofxMidiOut midiOut;
+#endif
+  bool midiOutEnabled = false;
 
   // Serial (ESP32 host bridge)
   ofSerial serial;
@@ -166,6 +164,35 @@ private:
   };
 
   static constexpr int kPresetCount = 8;
-  std::array<Preset, kPresetCount> presets;
+  static constexpr int kSatelliteCount = 8;
+  struct PresetSlot {
+    bool hasData = false;
+    std::array<Preset, kSatelliteCount> satellites;
+  };
+  std::array<PresetSlot, kPresetCount> presets;
+  std::array<Preset, kSatelliteCount> satellitePresets;
+  std::array<bool, kSatelliteCount> satelliteActive;
+  std::array<uint32_t, kSatelliteCount> lastSendMillisBySlot;
+  bool forceSendAllOnce = false;
+  std::array<int, kSatelliteCount> satelliteIds;
+  std::array<std::string, kSatelliteCount> satelliteNames;
+  std::string satellitesPath;
+
+  void loadPresetsFromFile();
+  void savePresetsToFile() const;
+  void storePreset(int idx);
+  void recallPreset(int idx);
+  void loadSatelliteConfig();
+  void initSatellitePresets();
+  void applyCurrentToPreset(Preset& preset) const;
+  void applyPresetToCurrent(const Preset& preset);
+  void applyCurrentToActiveSatellites();
+  int firstActiveSatellite() const;
+
+  void sendFrameIfDue();
+  bool setupSerial();
+  void sendSerialFrame(uint8_t target);
+  void sendSerialKeepalive();
+  void encodeRlePayload();
   std::string presetsPath;
 };
