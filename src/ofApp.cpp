@@ -34,6 +34,11 @@ uint16_t computeSerialChecksum(uint8_t targetId, uint8_t flags, uint16_t payload
   return static_cast<uint16_t>(sum & 0xFFFF);
 }
 
+bool isImageExtension(const std::string& ext) {
+  const std::string lower = ofToLower(ext);
+  return lower == "png" || lower == "jpg" || lower == "jpeg" || lower == "bmp" || lower == "gif";
+}
+
 }
 
 //--------------------------------------------------------------
@@ -49,7 +54,7 @@ void ofApp::setup() {
   payload.assign(kPayloadSize, 0);
   setupSerial();
 
-  // Optional default video (put in bin/data as video.mp4)
+  // Optional default video/image (put in bin/data as video.mp4)
   loadVideo("video.mp4");
 
   // MIDI setup
@@ -66,7 +71,7 @@ void ofApp::update() {
   float dt = ofGetLastFrameTime();
   if (!pauseAutomation) globalTime += dt;
 
-  if (source == Source::Video && videoLoaded && !paused) {
+  if (source == Source::VideoImage && videoLoaded && !paused) {
     video.update();
     if (!video.isPlaying()) {
       video.setLoopState(OF_LOOP_NORMAL);
@@ -80,6 +85,14 @@ void ofApp::update() {
       video.setLoopState(OF_LOOP_NORMAL);
       video.play();
       lastVideoFrameMillis = ofGetElapsedTimeMillis();
+    }
+  }
+  if (source == Source::Webcam) {
+    if (!webcamReady) {
+      webcamReady = webcam.setup(webcamWidth, webcamHeight);
+    }
+    if (webcamReady) {
+      webcam.update();
     }
   }
 
@@ -128,6 +141,25 @@ void ofApp::loadVideo(const std::string& path) {
   if (path.empty()) return;
   ofFile file(path);
   if (!file.exists()) return;
+  const std::string ext = ofFilePath::getFileExt(path);
+  if (isImageExtension(ext)) {
+    if (videoLoaded) {
+      video.stop();
+      video.close();
+      videoLoaded = false;
+    }
+    imageLoaded = image.load(path);
+    if (imageLoaded) {
+      paused = false;
+      lastVideoFrame = -1;
+      lastVideoFrameMillis = ofGetElapsedTimeMillis();
+    }
+    return;
+  }
+  if (imageLoaded) {
+    image.clear();
+    imageLoaded = false;
+  }
   video.stop();
   video.close();
   videoLoaded = video.load(path);
@@ -143,7 +175,7 @@ void ofApp::loadVideo(const std::string& path) {
 
 //--------------------------------------------------------------
 void ofApp::loadVideoDialog() {
-  ofFileDialogResult res = ofSystemLoadDialog("Select video file");
+  ofFileDialogResult res = ofSystemLoadDialog("Select video or image file");
   if (res.bSuccess) loadVideo(res.getPath());
 }
 
@@ -153,9 +185,24 @@ void ofApp::updateDownsample() {
     drawLinePatternPixels();
     return;
   }
-  if (source == Source::Video) {
+  if (source == Source::VideoImage) {
+    if (imageLoaded) {
+      const ofPixels& srcPixels = image.getPixels();
+      if (!srcPixels.isAllocated()) return;
+      downsamplePixels = srcPixels;
+      downsamplePixels.resize(kCols, kRows);
+      return;
+    }
     if (!videoLoaded || !video.isFrameNew()) return;
     const ofPixels& srcPixels = video.getPixels();
+    if (!srcPixels.isAllocated()) return;
+    downsamplePixels = srcPixels;
+    downsamplePixels.resize(kCols, kRows);
+    return;
+  }
+  if (source == Source::Webcam) {
+    if (!webcamReady) return;
+    const ofPixels& srcPixels = webcam.getPixels();
     if (!srcPixels.isAllocated()) return;
     downsamplePixels = srcPixels;
     downsamplePixels.resize(kCols, kRows);
@@ -632,13 +679,22 @@ void ofApp::drawPreviews() {
 
   ofPushStyle();
   ofSetColor(255);
-  if (source == Source::Video && videoLoaded) {
-    video.draw(margin, margin, halfW, videoH);
+  if (source == Source::VideoImage && (videoLoaded || imageLoaded)) {
+    if (imageLoaded) {
+      image.draw(margin, margin, halfW, videoH);
+    } else {
+      video.draw(margin, margin, halfW, videoH);
+    }
+  } else if (source == Source::Webcam && webcamReady) {
+    webcam.draw(margin, margin, halfW, videoH);
   } else {
   ofSetColor(60);
     ofDrawRectangle(margin, margin, halfW, videoH);
     ofSetColor(200);
-    std::string lbl = (source == Source::MidiPattern) ? "MIDI pattern" : "";
+    std::string lbl;
+    if (source == Source::MidiPattern) lbl = "MIDI pattern";
+    if (source == Source::VideoImage) lbl = "Video/Image";
+    if (source == Source::Webcam) lbl = "Webcam";
     ofDrawBitmapString("Preview: " + lbl, margin + 10, margin + 20);
   }
 
@@ -687,7 +743,10 @@ void ofApp::drawUiText(float x, float y) {
 
   std::stringstream ss;
   ss << "Mode: ";
-  ss << (source == Source::Video ? "Video" : "MIDI Pattern") << "\n";
+  if (source == Source::VideoImage) ss << "Video/Image";
+  if (source == Source::MidiPattern) ss << "MIDI Pattern";
+  if (source == Source::Webcam) ss << "Webcam";
+  ss << "\n";
   ss << serialStatus << "\n";
   ss << "Send FPS: " << targetSendFps << " (max " << maxSerialFps << ")  Frames sent: " << framesSent.load()
      << " dropped: " << framesDropped.load() << "\n";
@@ -697,13 +756,13 @@ void ofApp::drawUiText(float x, float y) {
   ss << midiStatus << "\n";
   ss << "Controls:\n";
   ss << "  Space play/pause (video)  |  L load file  |  F fullscreen\n";
-  ss << "  M switch mode (video/midi)  |  ,/. mapping linear/serpentine  |  V vertical flip  |  [ ] rotate  |  R reset\n";
+  ss << "  T/Y/U select source  |  M cycle source  |  ,/. mapping linear/serpentine  |  V vertical flip  |  [ ] rotate  |  R reset\n";
   ss << "  Up/Down send fps  |  +/- brightness\n";
   ss << "  1-8 toggle satellite active  |  0 toggle all\n";
   ss << "  Line: A/Z angle  |  W/S width  |  O/P rot speed  |  K/I vertical speed  |  Q pause anim\n";
   ss << "  Edit bin/data/serial_device.txt to set serial port (or auto)\n";
   ss << "  Edit bin/data/satellites.json for names/IDs\n";
-  ss << "  Drag-and-drop a video file onto window\n";
+  ss << "  Drag-and-drop a video or image file onto window\n";
   const glm::vec2 textSize = estimateBitmapStringSize(ss.str(), charW, charH, lineH);
 
   float pad = 4.0f;
@@ -799,7 +858,21 @@ void ofApp::keyPressed(int key) {
       ofToggleFullscreen();
       break;
     case 'm': case 'M':
-      source = (source == Source::Video) ? Source::MidiPattern : Source::Video;
+      if (source == Source::VideoImage) source = Source::MidiPattern;
+      else if (source == Source::MidiPattern) source = Source::Webcam;
+      else source = Source::VideoImage;
+      settingsChanged = true;
+      break;
+    case 't': case 'T':
+      source = Source::VideoImage;
+      settingsChanged = true;
+      break;
+    case 'y': case 'Y':
+      source = Source::MidiPattern;
+      settingsChanged = true;
+      break;
+    case 'u': case 'U':
+      source = Source::Webcam;
       settingsChanged = true;
       break;
     case ',':
@@ -1085,6 +1158,7 @@ void ofApp::loadPresetsFromFile() {
     preset.hasData = entry.value("hasData", false);
     std::string sourceStr = entry.value("source", "video");
     if (sourceStr == "midi") preset.source = Source::MidiPattern;
+    if (sourceStr == "webcam") preset.source = Source::Webcam;
     preset.lineWidth = entry.value("lineWidth", preset.lineWidth);
     preset.angleDeg = entry.value("angleDeg", preset.angleDeg);
     preset.rotationSpeedDegPerSec = entry.value("rotationSpeedDegPerSec", preset.rotationSpeedDegPerSec);
@@ -1205,7 +1279,9 @@ void ofApp::savePresetsToFile() const {
       const Preset& preset = slot.satellites[sat];
       ofJson entry;
       entry["hasData"] = preset.hasData;
-      entry["source"] = (preset.source == Source::Video) ? "video" : "midi";
+      if (preset.source == Source::MidiPattern) entry["source"] = "midi";
+      else if (preset.source == Source::Webcam) entry["source"] = "webcam";
+      else entry["source"] = "video";
       entry["lineWidth"] = preset.lineWidth;
       entry["angleDeg"] = preset.angleDeg;
       entry["rotationSpeedDegPerSec"] = preset.rotationSpeedDegPerSec;
@@ -1315,7 +1391,9 @@ void ofApp::newMidiMessage(ofxMidiMessage &msg) {
       case 42: if (v > 0) { pauseAutomation = false; settingsChanged = true; } break; // STOP
       case 45: if (v > 0) { blackout = !blackout; settingsChanged = true; } break;    // REC
       case 46: if (v > 0) { // CYCLE toggles source
-        source = (source == Source::Video) ? Source::MidiPattern : Source::Video;
+        if (source == Source::VideoImage) source = Source::MidiPattern;
+        else if (source == Source::MidiPattern) source = Source::Webcam;
+        else source = Source::VideoImage;
         settingsChanged = true;
       } break;
       // S buttons 1-8 toggle satellites

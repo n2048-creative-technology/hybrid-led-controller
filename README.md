@@ -10,9 +10,10 @@ It lets you switch live between a MIDI‑controlled expression and a video‑dri
 
 ## Features
 
-- Two sources:
-  - Video: play a video and downsample to a 12×19 grid.
+- Three sources:
+  - Video/Image: play a video or load a still image (treated as a static frame) and downsample to a 12×19 grid.
   - MIDI Pattern: animated line pattern with full controls via KORG nanoKONTROL2.
+  - Webcam: live camera capture downsampled to the grid.
 - Serial sender:
   - Streams LED frames over serial to a host ESP32, which relays via ESP‑NOW to satellites.
 - Mapping options: column rotation, serpentine wiring, vertical flip, brightness control.
@@ -56,16 +57,19 @@ The executable is created at `bin/hybrid-led-controller`.
 
 ## Modes (sources)
 
-- Video mode:
-  - Plays the loaded video and downsamples to 12×19 grid.
-  - UI shows the video preview (left) and the LED grid preview (right).
+- Video/Image mode:
+  - Plays the loaded video or uses the loaded image as a static frame.
+  - UI shows the source preview (left) and the LED grid preview (right).
 - MIDI Pattern mode:
   - Generates an animated line pattern.
   - All parameters mapped to nanoKONTROL2 for live performance.
+- Webcam mode:
+  - Streams the default webcam and downsamples to 12×19.
 
 Switching sources
-- Keyboard: `M` toggles Video ↔ MIDI Pattern
-- MIDI: Mute 2 (CC 49) toggles Video ↔ MIDI Pattern
+- Keyboard: `T` = Video/Image, `Y` = MIDI Pattern, `U` = Webcam
+- Keyboard: `M` cycles Video/Image → MIDI Pattern → Webcam
+- MIDI: Cycle (CC 46) cycles Video/Image → MIDI Pattern → Webcam
 
 
 ## MIDI Controller (KORG nanoKONTROL2)
@@ -90,7 +94,7 @@ Typical CC layout in CC mode is assumed. The app scans all input ports and prefe
   - Rec 1 (CC 64): Recall preset 1
   - Rec 2 (CC 65): Recall preset 2
   - Rec 3–8 (CC 66–71): Recall presets 3–8
-  - Cycle (CC 46): Toggle Mode Video ↔ MIDI Pattern
+  - Cycle (CC 46): Cycle sources Video/Image → MIDI Pattern → Webcam
   - Play (CC 41): Pause automation
   - Stop (CC 42): Resume automation
   - Rec (CC 45): Toggle blackout
@@ -102,7 +106,10 @@ Notes
 ## Keyboard Shortcuts
 
 - Global
-  - `M`: switch mode (Video/MIDI)
+  - `T`: Video/Image source
+  - `Y`: MIDI Pattern source
+  - `U`: Webcam source
+  - `M`: cycle sources
   - `F`: fullscreen
   - `+/-`: global brightness
   - Up/Down: target send FPS (1–120)
@@ -113,9 +120,9 @@ Notes
 - `0`: toggle all satellites active
 - `1-8`: toggle satellites 1–8 active
 - Video
-  - `L`: load video file (dialog)
-  - Space: play/pause
-  - Drag‑and‑drop: drop a video file to load
+  - `L`: load video/image file (dialog)
+  - Space: play/pause (video only)
+  - Drag‑and‑drop: drop a video or image file to load
 - MIDI Pattern (line)
   - `A/Z`: angle ±
   - `W/S`: line width ±

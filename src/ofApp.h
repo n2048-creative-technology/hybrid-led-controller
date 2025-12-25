@@ -33,10 +33,10 @@ public:
 
 private:
   // Source selection
-  enum class Source { Video, MidiPattern };
-  Source source = Source::Video;
+  enum class Source { VideoImage, MidiPattern, Webcam };
+  Source source = Source::VideoImage;
 
-  // Video pipeline (from video-to-LED-matrix)
+  // Video/image pipeline (from video-to-LED-matrix)
   void updateDownsample();
   // Pattern generator (from cylinder-led-controller)
   void drawLinePatternPixels();
@@ -59,12 +59,19 @@ private:
   static constexpr int kRows = 19;
   static constexpr int kNumLeds = kCols * kRows;
   static constexpr int kPayloadSize = kNumLeds * 3;
-  // Video
+  // Video/image
   ofVideoPlayer video;
   bool videoLoaded = false;
+  ofImage image;
+  bool imageLoaded = false;
   bool paused = false; // video pause
   int lastVideoFrame = -1;
   uint32_t lastVideoFrameMillis = 0;
+  // Webcam
+  ofVideoGrabber webcam;
+  bool webcamReady = false;
+  int webcamWidth = 640;
+  int webcamHeight = 480;
 
   // Downsampled grid
   ofFbo downsampleFbo;
@@ -142,7 +149,7 @@ private:
 
   struct Preset {
     bool hasData = false;
-    Source source = Source::Video;
+    Source source = Source::VideoImage;
     float lineWidth = 2.0f;
     float angleDeg = 0.0f;
     float rotationSpeedDegPerSec = 30.0f;
